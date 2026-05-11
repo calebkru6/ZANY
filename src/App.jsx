@@ -11,3 +11,4 @@ import { _snapshotPowers, _diffPowers } from "./game/snapHelpers";
 import SNAP_HANDLERS from "./game/snapHandlers";
 
 // ── Everything else in your file continues unchanged below ────────
+import CARD_IMAGES from "./game/cardImages";
