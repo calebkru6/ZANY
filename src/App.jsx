@@ -4,6 +4,7 @@
 import { useState, useEffect, useRef } from "react";
 
 // ── Extracted modules ─────────────────────────────────────────────
+import GLOBAL_CSS from "./styles/globalStyles";
 import { STORAGE_KEY, STORAGE_KEY_OLD, DECKS_KEY, TURNS, MAX_PER_SIDE, DEBUG_DRAG, HAND_SIZE } from "./constants";
 import useTilt from "./hooks/useTilt";
 import { _snapshotPowers, _diffPowers } from "./game/snapHelpers";
