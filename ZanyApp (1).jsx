@@ -65,6 +65,7 @@ function useTilt(maxTilt = 14, scale = 1.05) {
 
 const STORAGE_KEY     = "zany_v9";  // bumped: Snap-only ability system + moves
 const STORAGE_KEY_OLD = "zany_v8";  // legacy cache, cleared on first load
+const DECKS_KEY       = "zany_decks_v1"; // saved decks
 const TURNS         = 6;
 const MAX_PER_SIDE  = 4;     // Marvel-Snap-style: 4 cards max per location per side
 const DEBUG_DRAG    = false; // flip to true to see live drag state at top of screen
@@ -91,7 +92,11 @@ function _moveCard(state, side, cardId, fromZ, toZ) {
   const moved = fromArr.splice(idx, 1)[0];
   // Human Torch: doubles power when moved
   if (moved._humanTorch) moved.clout = moved.clout * 2;
-  // Dagger / Kraven: gain power from destination (handled by their handlers on next reveal)
+  // Dagger: +2 power per enemy card at the destination
+  if (moved.snapName === "Dagger") {
+    const oppKey = side === "player" ? "aCards" : "pCards";
+    moved.clout += (toArr.length) * 2; // toArr is pre-push enemy count
+  }
   toArr.push(moved);
   return true;
 }
@@ -448,9 +453,10 @@ const SNAP_HANDLERS = {
 
   // Carnage: Destroy your other cards here, +2 power per destroyed
   "Carnage": (s, card, zIdx, isPlayer) => {
+    const side = isPlayer ? "player" : "ai";
     const sideKey = isPlayer ? "pCards" : "aCards";
     const here = s.zones[zIdx][sideKey];
-    const others = here.filter(c => c.id !== card.id);
+    const others = here.filter(c => c.id !== card.id && _canDestroy(s, side, zIdx, c.id));
     const me = here.find(c => c.id === card.id);
     others.forEach(c => {
       const i = here.indexOf(c); if (i>=0) here.splice(i,1);
@@ -501,9 +507,10 @@ const SNAP_HANDLERS = {
 
   // Deathlok: Destroy your other cards here
   "Deathlok": (s, card, zIdx, isPlayer) => {
+    const side = isPlayer ? "player" : "ai";
     const sideKey = isPlayer ? "pCards" : "aCards";
     const here = s.zones[zIdx][sideKey];
-    const others = here.filter(c => c.id !== card.id);
+    const others = here.filter(c => c.id !== card.id && _canDestroy(s, side, zIdx, c.id));
     others.forEach(c => {
       const i = here.indexOf(c); if (i>=0) here.splice(i,1);
       if (isPlayer) { s.playerDestroyed=s.playerDestroyed||[]; s.playerDestroyed.push(c); }
@@ -600,14 +607,18 @@ const SNAP_HANDLERS = {
   // Gambit: Discard a card from hand, destroy random enemy card here
   "Gambit": (s, card, zIdx, isPlayer) => {
     const hand   = isPlayer ? s.playerHand : s.aiHand;
+    const oppSide = isPlayer ? "ai" : "player";
     const oppKey = isPlayer ? "aCards" : "pCards";
     if (!hand.length) return { state: s };
     const discarded = hand.splice(Math.floor(Math.random()*hand.length),1)[0];
     if (isPlayer) { s.playerDiscard=s.playerDiscard||[]; s.playerDiscard.push(discarded); }
     else          { s.aiDiscard=s.aiDiscard||[]; s.aiDiscard.push(discarded); }
-    const enemies = s.zones[zIdx][oppKey];
-    if (enemies.length) {
-      const target = enemies.splice(Math.floor(Math.random()*enemies.length),1)[0];
+    const destroyable = s.zones[zIdx][oppKey].filter(c => _canDestroy(s, oppSide, zIdx, c.id));
+    if (destroyable.length) {
+      const target = destroyable.splice(Math.floor(Math.random()*destroyable.length),1)[0];
+      const enemies = s.zones[zIdx][oppKey];
+      const ti = enemies.findIndex(c=>c.id===target.id);
+      if (ti>=0) enemies.splice(ti,1);
       if (!isPlayer) { s.playerDestroyed=s.playerDestroyed||[]; s.playerDestroyed.push(target); }
       else           { s.aiDestroyed=s.aiDestroyed||[]; s.aiDestroyed.push(target); }
     }
@@ -693,12 +704,12 @@ const SNAP_HANDLERS = {
   // Killmonger: Destroy ALL 1-cost cards in play
   "Killmonger": (s, card, zIdx, isPlayer) => {
     for (let z=0;z<3;z++) {
-      for (const side of ["pCards","aCards"]) {
-        const victims = s.zones[z][side].filter(c=>c.energy===1&&c.id!==card.id);
+      for (const [side, sideKey] of [["player","pCards"],["ai","aCards"]]) {
+        const victims = s.zones[z][sideKey].filter(c=>c.energy===1&&c.id!==card.id&&_canDestroy(s,side,z,c.id));
         victims.forEach(c=>{
-          const i=s.zones[z][side].indexOf(c); if(i>=0) s.zones[z][side].splice(i,1);
-          if (side==="pCards") { s.playerDestroyed=s.playerDestroyed||[]; s.playerDestroyed.push(c); }
-          else                 { s.aiDestroyed=s.aiDestroyed||[]; s.aiDestroyed.push(c); }
+          const i=s.zones[z][sideKey].indexOf(c); if(i>=0) s.zones[z][sideKey].splice(i,1);
+          if (sideKey==="pCards") { s.playerDestroyed=s.playerDestroyed||[]; s.playerDestroyed.push(c); }
+          else                   { s.aiDestroyed=s.aiDestroyed||[]; s.aiDestroyed.push(c); }
         });
       }
     }
@@ -821,8 +832,9 @@ const SNAP_HANDLERS = {
 
   // Arnim Zola: Destroy a random other card here, copy it to other locations
   "Arnim Zola": (s, card, zIdx, isPlayer) => {
+    const side = isPlayer ? "player" : "ai";
     const sideKey = isPlayer ? "pCards" : "aCards";
-    const here = s.zones[zIdx][sideKey].filter(c=>c.id!==card.id);
+    const here = s.zones[zIdx][sideKey].filter(c=>c.id!==card.id && _canDestroy(s, side, zIdx, c.id));
     if (!here.length) return { state: s };
     const target = here[Math.floor(Math.random()*here.length)];
     const ti = s.zones[zIdx][sideKey].indexOf(target);
@@ -1541,11 +1553,15 @@ const GLOBAL_CSS = `
   .home-actions { display:flex; flex-direction:column; align-items:center; gap:14px; }
 
   /* ── Collection grid ── */
-  .collection-toolbar { display:flex; gap:8px; padding:12px 14px; align-items:center; background:var(--bg2); border-bottom:1px solid var(--border); }
+  .collection-toolbar {
+    display:flex; flex-direction:column; gap:8px;
+    padding:10px 14px; background:var(--bg2); border-bottom:1px solid var(--border);
+  }
+  .collection-toolbar-row { display:flex; gap:6px; align-items:center; }
   .search-input { background:var(--bg3); border:1.5px solid var(--border); color:var(--text); border-radius:9px; padding:7px 12px; font-family:var(--f-head); font-size:0.9rem; outline:none; flex:1; transition:border-color 0.18s; }
   .search-input:focus { border-color:var(--neon); }
-  .filter-tabs { display:flex; gap:5px; }
-  .filter-tab { background:var(--bg3); border:1.5px solid var(--border); color:var(--muted); border-radius:8px; padding:4px 10px; font-size:0.75rem; cursor:pointer; font-family:var(--f-head); white-space:nowrap; transition:all 0.14s; }
+  .filter-tabs { display:flex; gap:5px; flex-wrap:nowrap; overflow-x:auto; }
+  .filter-tab { background:var(--bg3); border:1.5px solid var(--border); color:var(--muted); border-radius:8px; padding:4px 10px; font-size:0.75rem; cursor:pointer; font-family:var(--f-head); white-space:nowrap; transition:all 0.14s; flex-shrink:0; }
   .filter-tab.active { border-color:var(--neon); color:var(--neon); background:rgba(180,255,79,0.08); }
   /* 4-column snap-style grid */
   .card-grid {
@@ -1642,6 +1658,34 @@ const GLOBAL_CSS = `
   }
   .coll-preview-actions { display:flex; gap:10px; }
 
+  /* Preview info panel — ability text, flavor, stats */
+  .coll-preview-info {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 14px;
+    padding: 14px 18px;
+    width: min(320px, 80vw);
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .coll-preview-name {
+    font-family: var(--f-display); font-size: 1.15rem;
+    color: #fff; font-weight: 400; letter-spacing: 0.03em;
+  }
+  .coll-preview-ability {
+    font-size: 0.8rem; line-height: 1.5; color: var(--neon);
+    font-style: normal; font-weight: 500;
+  }
+  .coll-preview-flavor {
+    font-size: 0.72rem; color: rgba(255,255,255,0.45);
+    font-style: italic; line-height: 1.4;
+  }
+  .coll-preview-stats {
+    display: flex; gap: 12px; margin-top: 2px;
+    font-family: var(--f-mono); font-size: 0.7rem; font-weight: 700;
+  }
+  .coll-stat-energy { color: #1d8ed4; }
+  .coll-stat-power  { color: #e74624; }
+
   .coll-tray { position:fixed; bottom:0; left:0; right:0; z-index:200;
     background:var(--bg2); border-top:1px solid var(--border);
     padding:14px 20px 24px; display:flex; gap:10px; justify-content:center; align-items:center;
@@ -1664,21 +1708,22 @@ const GLOBAL_CSS = `
   .form-err { color:#ff7878; font-size:0.82rem; }
 
   /* ════════════════════════════════════════════════
-     CARD — full-bleed art · energy TL · power BR
-     Base size 130×182 (1:1.4). Overridden per context.
+     CARD — full-bleed art · energy TL · power TR
+     Default width 130px, aspect-ratio drives height.
+     Override width only — height follows automatically.
      ════════════════════════════════════════════════ */
   .card-view {
-    width:130px; height:182px;
+    width:130px;
+    aspect-ratio: 1 / 1.4;
+    height:auto;
     position:relative; flex-shrink:0; border-radius:12px;
-    overflow:visible;          /* badges hang off corners */
+    overflow:visible;
     background:transparent;
     box-shadow:0 6px 20px rgba(0,0,0,0.65);
     transition:transform 0.2s cubic-bezier(.22,1,.36,1), box-shadow 0.2s;
     cursor:default;
   }
-  /* ════════════════════════════════════════════
-     CARD FLIP + BACK
-     ════════════════════════════════════════════ */
+  /* card-flip fills the card exactly */
   .card-flip {
     position:absolute; inset:0;
     transform-style:preserve-3d;
@@ -1996,19 +2041,16 @@ const GLOBAL_CSS = `
     0%,100% { box-shadow:0 0 0 1.5px rgba(180,255,79,0.5), 0 4px 12px rgba(180,255,79,0.15); }
     50%      { box-shadow:0 0 0 2px rgba(180,255,79,0.9),  0 4px 18px rgba(180,255,79,0.35); }
   }
-  /* ── Mini (zones): fills 1/2 of zone width, height by aspect-ratio ── */
+  /* ── Mini (zones): fills zone-slot-cell completely ── */
   .card-mini {
     width:100%;
-    aspect-ratio: 1 / 1.4;     /* Marvel Snap card proportion */
-    height:auto;
-    border-radius:7px;
-    max-width:64px;            /* hard cap so they never get huge on tablets */
+    height:100%;
+    border-radius:6px;
   }
-  .card-mini .card-energy { width:14px; height:14px; font-size:0.58rem; top:2px; left:2px; }
-  .card-mini .card-power  { width:14px; height:14px; font-size:0.58rem; top:2px; right:2px; bottom:auto; left:auto; }
-  .card-mini .card-emoji  { font-size:2rem; }
+  .card-mini .card-energy { width:13px; height:13px; font-size:0.52rem; top:2px; left:2px; }
+  .card-mini .card-power  { width:13px; height:13px; font-size:0.52rem; top:2px; right:2px; bottom:auto; left:auto; }
+  .card-mini .card-emoji  { font-size:1.8rem; }
   .card-mini:hover { transform:translateY(-3px) scale(1.06)!important; box-shadow:0 8px 18px rgba(0,0,0,0.7)!important; }
-  .card-mini[onclick], .card-mini { /* clickable mini cards in zones use cursor:pointer when onClick is set */ }
 
   /* ════════════════════════════════════════════
      GAME SCREEN
@@ -2031,13 +2073,26 @@ const GLOBAL_CSS = `
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
     transition:background 0.12s; }
   .debug-status.debug-hit { background:rgba(180,255,79,0.95); box-shadow:0 0 16px rgba(180,255,79,0.6); }
-  .game-top { display:flex; align-items:center; justify-content:space-between; padding:8px 12px; flex-shrink:0; height:56px; }
-  .player-pill {
-    display:flex; align-items:center; gap:8px;
-    padding:3px 8px; border-radius:20px;
-    border:1.5px solid transparent;
-    transition: border-color 0.3s, box-shadow 0.3s, background 0.3s;
+  .game-top {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;   /* equal wings, fixed centre */
+    align-items: center;
+    padding: 8px 10px 6px;
+    flex-shrink: 0;
+    height: 70px;
+    background: linear-gradient(180deg, rgba(0,0,0,0.75) 0%, rgba(0,0,0,0.0) 100%);
+    position: relative; z-index: 10;
   }
+  .player-pill {
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 8px 4px 4px;
+    border-radius: 22px;
+    border: 2px solid transparent;     /* always 2px so border doesn't shift layout */
+    transition: border-color 0.3s, box-shadow 0.3s, background 0.3s;
+    min-width: 0; overflow: hidden;
+    justify-self: start;
+  }
+  .player-pill:last-child { justify-self: end; }
   /* Glowing gold border + soft halo on whichever side has priority — */
   /* matches Marvel Snap's glowing name plate around the priority player. */
   .player-pill.has-priority {
@@ -2051,32 +2106,42 @@ const GLOBAL_CSS = `
     50%      { box-shadow: 0 0 20px rgba(255, 216, 77, 0.7), 0 0 38px rgba(255, 200, 30, 0.35); }
   }
   .player-pill.has-priority .player-name { color: #ffe9a0; text-shadow: 0 0 8px rgba(255, 200, 50, 0.6); }
-  .player-name-block { display:flex; flex-direction:column; gap:1px; }
-  .hand-count { font-family:var(--f-mono); font-size:0.6rem; color:rgba(255,255,255,0.55); letter-spacing:0.04em; }
-  .player-avatar { width:38px; height:38px; border-radius:50%; background:var(--bg3); border:2px solid rgba(255,255,255,0.15); display:flex; align-items:center; justify-content:center; font-size:1.2rem; }
-  .player-name { font-size:0.78rem; font-weight:700; color:var(--text); letter-spacing:0.04em; }
-  .energy-crystal { display:flex; flex-direction:column; align-items:center; gap:2px; }
-  .crystal-gem { width:38px; height:38px; background:linear-gradient(135deg,#7040f0,#a070ff); border-radius:6px; transform:rotate(45deg); display:flex; align-items:center; justify-content:center; box-shadow:0 0 20px rgba(130,80,255,0.6); }
-  .crystal-gem span { transform:rotate(-45deg); font-family:var(--f-mono); font-weight:700; font-size:1.05rem; color:#fff; }
-  .crystal-label { font-size:0.55rem; color:var(--muted); font-family:var(--f-mono); letter-spacing:0.06em; }
+  .player-name-block { display:flex; flex-direction:column; gap:2px; min-width:0; overflow:hidden; }
+  .hand-count { font-family:var(--f-mono); font-size:0.58rem; color:rgba(255,255,255,0.5); letter-spacing:0.04em; white-space:nowrap; }
+  .player-avatar { width:36px; height:36px; border-radius:50%; background:var(--bg3); border:2px solid rgba(255,255,255,0.15); display:flex; align-items:center; justify-content:center; font-size:1.15rem; flex-shrink:0; }
+  .player-name { font-size:0.75rem; font-weight:700; color:var(--text); letter-spacing:0.05em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+  /* Centre cluster: energy gem only — label lives below in .turn-label */
+  .energy-crystal {
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .crystal-gem {
+    width: 30px; height: 30px;
+    background: linear-gradient(135deg,#7040f0,#a070ff);
+    border-radius: 5px; transform: rotate(45deg);
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 0 14px rgba(130,80,255,0.6), 0 2px 6px rgba(0,0,0,0.5);
+  }
+  .crystal-gem span {
+    transform: rotate(-45deg);
+    font-family: var(--f-mono); font-weight: 700; font-size: 0.85rem; color: #fff;
+  }
+  /* Turn label: centered strip between top bar and zones */
+  .turn-label {
+    text-align: center; flex-shrink: 0;
+    font-size: 0.48rem; color: var(--muted);
+    font-family: var(--f-mono); letter-spacing: 0.1em;
+    padding: 3px 0 2px;
+  }
 
   /* ── Zones ── */
-  .zones-row { display:flex; gap:6px; padding:4px 8px; flex:1; min-height:0; align-items:stretch; }
+  .zones-row { display:flex; gap:5px; padding:4px 8px; flex:1; min-height:0; align-items:stretch; }
   .zone {
     flex:1; display:flex; flex-direction:column;
-    border-radius:14px; overflow:hidden;
-    border:1.5px solid rgba(255,255,255,0.07);
-    background:
-      /* horizon glow */
-      radial-gradient(ellipse 120% 35% at 50% 50%, var(--zone-accent,transparent) 0%, transparent 70%),
-      /* sky → horizon → ground */
-      linear-gradient(180deg,
-        var(--zone-sky,#0d1020)     0%,
-        var(--zone-horizon,#16244a) 50%,
-        var(--zone-ground,#040408) 100%
-      );
-    background-size: cover;
-    background-position: center;
+    border-radius:12px; overflow:hidden;
+    border:1px solid rgba(255,255,255,0.09);
+    background: rgba(255,255,255,0.03);
     transition:border-color 0.18s, box-shadow 0.18s;
     position:relative;
   }
@@ -2084,7 +2149,7 @@ const GLOBAL_CSS = `
   .zone.has-bg-image { background-size:cover; background-position:center; }
   .zone.has-bg-image::before {
     content:""; position:absolute; inset:0;
-    background:linear-gradient(180deg, rgba(0,0,0,0.18) 0%, rgba(0,0,0,0.05) 50%, rgba(0,0,0,0.45) 100%);
+    background:rgba(0,0,0,0.55);
     pointer-events:none;
   }
 
@@ -2101,25 +2166,34 @@ const GLOBAL_CSS = `
   .zone-slot {
     flex:1; min-height:0;
     display:grid;
-    grid-template-columns:1fr 1fr;     /* exactly 2 columns, Snap-style 2x2 */
-    grid-auto-rows:min-content;
-    gap:4px; padding:5px;
-    place-items:start center;
+    grid-template-columns: 1fr 1fr;
+    grid-auto-rows: calc(50% - 1px);
+    gap:2px; padding:3px;
     overflow:hidden;
+    align-content:end;    /* AI: pack toward center bar */
   }
-  /* AI cards fill from BOTTOM-LEFT of AI slot (closest to center bar) */
-  .zone-slot.ai-slot     { border-bottom:1px solid rgba(255,255,255,0.05); align-content:end; }
-  /* Player cards fill from TOP-LEFT of player slot (closest to center bar) */
+  .zone-slot.ai-slot { border-bottom:1px solid rgba(255,255,255,0.05); align-content:end; }
   .zone-slot.player-slot { align-content:start; }
-  .zone-slot .zone-empty { grid-column:1 / -1; align-self:center; justify-self:center; }
-  .zone-empty { color:rgba(255,255,255,0.07); font-size:0.9rem; align-self:center; }
+  .zone-slot .zone-empty { grid-column:1/-1; text-align:center; align-self:center; }
+  .zone-empty { color:rgba(255,255,255,0.12); font-size:0.9rem; }
+
+  /* Card cell: fills its grid cell completely, height-driven */
+  .zone-slot-cell {
+    position:relative;
+    overflow:hidden;
+    border-radius:6px;
+    min-height:0;
+    min-width:0;
+  }
+
+  /* card-mini fills its cell completely */
   .zone-bar {
     flex-shrink:0;
     display:flex; flex-direction:column; align-items:center; justify-content:center;
-    gap:5px; padding:7px 6px;
+    gap:2px; padding:4px 4px;
     border-top:1px solid rgba(255,255,255,0.07);
     border-bottom:1px solid rgba(255,255,255,0.07);
-    background:rgba(0,0,0,0.4);
+    background:rgba(0,0,0,0.5);
     transition:background 0.3s;
   }
   .zone-bar.winning-player { background:rgba(180,255,79,0.1); }
@@ -2141,8 +2215,8 @@ const GLOBAL_CSS = `
     100% { transform: scale(1.08); filter: brightness(1); }
   }
   .zone-score-hex.score-changed { animation: score-pulse 0.5s cubic-bezier(.34,1.56,.64,1) both; }
-  .zone-name    { font-family:var(--f-display); font-size:0.78rem; font-weight:400; letter-spacing:0.04em; color:#fff; text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; width:100%; }
-  .zone-ability { font-size:0.48rem; color:rgba(255,255,255,0.45); text-align:center; line-height:1.35; width:100%; }
+  .zone-name    { font-family:var(--f-display); font-size:0.68rem; font-weight:400; letter-spacing:0.04em; color:#fff; text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; width:100%; }
+  .zone-ability { font-size:0.42rem; color:rgba(255,255,255,0.45); text-align:center; line-height:1.25; width:100%; }
 
   /* ── Bottom bar ── */
   .game-bottom {
@@ -2215,21 +2289,25 @@ const GLOBAL_CSS = `
 
   /* ── Hand ── */
   .hand-area {
-    position:relative; flex-shrink:0; height:140px;
+    position:relative; flex-shrink:0;
+    min-height:130px;
     background:rgba(0,0,0,0.65);
     display:flex; align-items:flex-end; justify-content:center;
-    padding-bottom:8px; overflow:visible;
+    padding:6px 8px 8px; overflow:visible;
     touch-action:none;
   }
-  .hand-cards { display:flex; align-items:flex-end; gap:3px; position:relative; }
-  /* Each slot's width ≈ card width (no overlap). Cards are wider on smaller hand. */
+  .hand-cards { display:flex; align-items:flex-end; gap:4px; position:relative; justify-content:center; width:100%; }
+  /* Each slot: width drives height via aspect-ratio on the card-view inside */
   .hand-slot {
     position:relative; flex-shrink:0;
-    width:var(--slot-w,82px); height:122px;
+    width:var(--slot-w,82px);
+    /* height is driven by aspect-ratio on the child card-view */
   }
   .hand-slot .card-view {
-    position:relative;             /* normal flow, not absolute */
-    width:100%; height:100%;
+    position:relative;
+    width:100%;
+    aspect-ratio: 1 / 1.4;
+    height:auto;
     border-radius:10px;
     transform-origin:bottom center;
     transition:transform 0.2s cubic-bezier(.22,1,.36,1), box-shadow 0.2s, opacity 0.15s;
@@ -2239,19 +2317,20 @@ const GLOBAL_CSS = `
     -webkit-touch-callout:none;
   }
   .hand-slot .card-view:active { cursor:grabbing; }
-  .hand-slot .card-view .card-emoji  { font-size:2.6rem; }
-  .hand-slot .card-view .card-energy { width:16px; height:16px; font-size:0.66rem; top:3px; left:3px; }
-  .hand-slot .card-view .card-power  { width:16px; height:16px; font-size:0.66rem; top:3px; right:3px; bottom:auto; left:auto; }
-  .hand-slot .card-view .card-nameplate { height:36%; padding:0 4px 6px; align-items:flex-end; }
+  .hand-slot .card-view .card-emoji  { font-size:2.4rem; }
+  /* Badges scale with slot width via CSS clamp */
+  .hand-slot .card-view .card-energy { width:16px; height:16px; font-size:0.64rem; top:3px; left:3px; }
+  .hand-slot .card-view .card-power  { width:16px; height:16px; font-size:0.64rem; top:3px; right:3px; bottom:auto; left:auto; }
+  .hand-slot .card-view .card-nameplate { height:36%; padding:0 3px 5px; align-items:flex-end; }
   .hand-slot .card-view .card-name-text {
-    font-size:0.5rem;
-    letter-spacing:0.02em;
+    font-size:0.48rem;
+    letter-spacing:0.01em;
     line-height:1.05;
-    white-space:normal;          /* allow wrapping for long names */
+    white-space:normal;
     overflow:hidden;
     text-overflow:clip;
     display:-webkit-box;
-    -webkit-line-clamp:2;        /* max 2 lines */
+    -webkit-line-clamp:2;
     -webkit-box-orient:vertical;
     word-break:break-word;
   }
@@ -2386,6 +2465,73 @@ const GLOBAL_CSS = `
   .result-title { font-size:2rem; font-weight:700; }
   .result-sub { font-size:0.85rem; color:var(--muted); }
   .result-actions { display:flex; gap:10px; justify-content:center; }
+
+  /* ── Winner fanfare: gold glow + pulse on winning zone ── */
+  .zone-winner-glow {
+    box-shadow: 0 0 0 3px #ffe066, 0 0 28px rgba(255,224,102,0.7), 0 0 60px rgba(255,224,102,0.3) !important;
+    animation: winner-pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes winner-pulse {
+    0%,100% { box-shadow: 0 0 0 3px #ffe066, 0 0 28px rgba(255,224,102,0.7), 0 0 60px rgba(255,224,102,0.3); }
+    50%      { box-shadow: 0 0 0 3px #ffe066, 0 0 48px rgba(255,224,102,0.95), 0 0 90px rgba(255,224,102,0.55); }
+  }
+  /* Confetti particles */
+  .confetti-wrap { position:absolute; inset:0; z-index:290; pointer-events:none; overflow:hidden; }
+  .confetti-piece {
+    position:absolute; width:8px; height:12px; border-radius:2px; opacity:0;
+    animation: confetti-fall 2.2s ease-in forwards;
+  }
+  @keyframes confetti-fall {
+    0%   { opacity:1; transform:translateY(-20px) rotate(0deg); }
+    80%  { opacity:1; }
+    100% { opacity:0; transform:translateY(100vh) rotate(720deg); }
+  }
+
+  /* ── Ongoing shimmer border on Ongoing cards in zones ── */
+  .ongoing-shimmer::after {
+    content:'';
+    position:absolute; inset:-2px;
+    border-radius:inherit;
+    border:2px solid transparent;
+    background:linear-gradient(135deg,#b4ff4f,#5fd4ff,#ff5fba,#b4ff4f) border-box;
+    -webkit-mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: destination-out;
+    mask-composite: exclude;
+    animation: ongoing-shimmer-spin 2.4s linear infinite;
+    pointer-events:none;
+    z-index:20;
+  }
+  @keyframes ongoing-shimmer-spin {
+    0%   { filter: hue-rotate(0deg) brightness(1); }
+    50%  { filter: hue-rotate(180deg) brightness(1.3); }
+    100% { filter: hue-rotate(360deg) brightness(1); }
+  }
+
+  /* ── Destroy flash: red burst when card is destroyed ── */
+  .destroy-flash {
+    position:absolute; inset:-4px; z-index:40; border-radius:inherit;
+    pointer-events:none;
+    animation: destroy-burst 0.6s ease-out forwards;
+  }
+  @keyframes destroy-burst {
+    0%   { box-shadow: 0 0 0 0 rgba(255,60,60,0); background: rgba(255,60,60,0.6); opacity:1; transform:scale(1); }
+    40%  { box-shadow: 0 0 0 18px rgba(255,60,60,0.4); background: rgba(255,100,40,0.3); opacity:1; transform:scale(1.15); }
+    100% { box-shadow: 0 0 0 32px rgba(255,60,60,0); background: transparent; opacity:0; transform:scale(1.4); }
+  }
+  .destroy-label {
+    position:absolute; left:50%; top:50%; z-index:45;
+    transform:translate(-50%,-50%);
+    font-family:var(--f-display); font-size:1.1rem; color:#ff4444;
+    text-shadow:0 0 12px rgba(255,60,60,0.9), 0 2px 4px rgba(0,0,0,0.9);
+    pointer-events:none;
+    animation: destroy-label-pop 0.7s cubic-bezier(.22,.61,.36,1) forwards;
+  }
+  @keyframes destroy-label-pop {
+    0%   { opacity:0; transform:translate(-50%,-50%) scale(0.4); }
+    30%  { opacity:1; transform:translate(-50%,-70%) scale(1.3); }
+    70%  { opacity:1; transform:translate(-50%,-90%) scale(1.0); }
+    100% { opacity:0; transform:translate(-50%,-120%) scale(0.9); }
+  }
 
   /* Card detail popup */
 
@@ -2537,6 +2683,40 @@ const GLOBAL_CSS = `
   ::-webkit-scrollbar { width:5px; }
   ::-webkit-scrollbar-track { background:var(--bg); }
   ::-webkit-scrollbar-thumb { background:var(--bg3); border-radius:3px; }
+
+  /* ════════════════════════════════════════════
+     DECK SYSTEM
+     ════════════════════════════════════════════ */
+  .deck-select-screen { align-items:center; justify-content:flex-start; gap:0; padding-top:0; background:radial-gradient(ellipse at 50% 30%,#0d1e38 0%,#05050f 70%); }
+  .deck-select-header { width:100%; display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid var(--border); background:var(--bg2); flex-shrink:0; }
+  .deck-select-title { flex:1; font-size:1.1rem; font-weight:700; }
+  .deck-list { width:100%; padding:16px; display:flex; flex-direction:column; gap:12px; overflow-y:auto; flex:1; }
+  .deck-card {
+    background:var(--bg2); border:1.5px solid var(--border); border-radius:16px;
+    padding:16px 18px; display:flex; align-items:center; gap:14px;
+    cursor:pointer; transition:border-color 0.18s, box-shadow 0.18s;
+    position:relative;
+  }
+  .deck-card:active { transform:scale(0.98); }
+  .deck-card.deck-selected { border-color:var(--neon); box-shadow:0 0 0 2px var(--neon),0 0 20px rgba(180,255,79,0.25); }
+  .deck-card-icon { font-size:2rem; width:48px; text-align:center; flex-shrink:0; }
+  .deck-card-info { flex:1; min-width:0; }
+  .deck-card-name { font-size:1rem; font-weight:700; color:var(--text); margin-bottom:3px; }
+  .deck-card-sub  { font-size:0.72rem; color:var(--muted); font-family:var(--f-mono); }
+  .deck-card-actions { display:flex; gap:6px; }
+  .deck-random-btn { background:linear-gradient(135deg,#7040f0,#a070ff); border:none; color:#fff; border-radius:12px; padding:10px 18px; font-family:var(--f-display); font-size:1rem; cursor:pointer; display:flex; align-items:center; gap:8px; }
+  .deck-play-bar { width:100%; padding:14px 16px; background:var(--bg2); border-top:1px solid var(--border); flex-shrink:0; }
+
+  /* Deck builder */
+  .deck-builder-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; padding:10px; flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; }
+  .deck-builder-slot { position:relative; aspect-ratio:63.5/88.9; cursor:pointer; }
+  .deck-builder-slot .coll-card { transition:transform 0.15s, box-shadow 0.15s; }
+  .deck-builder-slot .coll-card.in-deck { border-color:var(--neon); box-shadow:0 0 0 2px var(--neon); }
+  .deck-count-badge { position:absolute; top:-5px; right:-5px; z-index:10;
+    background:var(--neon); color:#050508; width:18px; height:18px; border-radius:50%;
+    font-size:0.6rem; font-weight:700; display:flex; align-items:center; justify-content:center; }
+  .deck-builder-bar { display:flex; align-items:center; gap:10px; padding:10px 14px; background:var(--bg2); border-top:1px solid var(--border); flex-shrink:0; }
+  .deck-bar-count { font-family:var(--f-mono); font-size:0.8rem; color:var(--muted); flex:1; }
 `;
 
 // ─── Components ───────────────────────────────────────────────────────────────
@@ -2544,9 +2724,10 @@ function CardView({ card, mini = false, selected = false, playing = false, landi
   const hue = hueOf(card);
   const energy = card.energy ?? card.clout;  // energy cost — falls back to power if not set
   const power  = card.clout;
+  const isOngoing = revealed && card.abilityText && card.abilityText.startsWith("Ongoing:");
   return (
     <div
-      className={["card-view", mini?"card-mini":"", selected?"card-selected":"", playing?"card-playing":"", landing?"card-land":"", extraClass].filter(Boolean).join(" ")}
+      className={["card-view", mini?"card-mini":"", selected?"card-selected":"", playing?"card-playing":"", landing?"card-land":"", isOngoing?"ongoing-shimmer":"", extraClass].filter(Boolean).join(" ")}
       style={{ "--ch": hue, cursor: onPointerDown ? "grab" : onClick ? "pointer" : "default", ...extraStyle }}
       onClick={onClick}
       onPointerDown={onPointerDown}
@@ -2578,7 +2759,7 @@ function CardView({ card, mini = false, selected = false, playing = false, landi
   );
 }
 
-function Zone({ zone, zoneRef, zoneIdx, state, dragOver, dragBlocked, scoreChanged, revealedIds, revealFx, powerFx, onSelectCard, playedThisTurnIds, onDragPlayerCard, onUnplayCard, draggingCardId }) {
+function Zone({ zone, zoneRef, zoneIdx, state, dragOver, dragBlocked, scoreChanged, revealedIds, revealFx, powerFx, onSelectCard, playedThisTurnIds, onDragPlayerCard, onUnplayCard, draggingCardId, winnerGlow }) {
   const pp = zonePower(zone.pCards, state, true,  zoneIdx) + klawBonusForZone(state||{zones:[]}, true,  zoneIdx);
   const ap = zonePower(zone.aCards, state, false, zoneIdx) + klawBonusForZone(state||{zones:[]}, false, zoneIdx);
   const winning = pp > ap ? "player" : ap > pp ? "ai" : "tied";
@@ -2596,7 +2777,7 @@ function Zone({ zone, zoneRef, zoneIdx, state, dragOver, dragBlocked, scoreChang
   return (
     <div
       ref={zoneRef}
-      className={`zone${zone.bgImage ? " has-bg-image" : ""}${dragOver ? " drag-over" : ""}${dragBlocked ? " drag-blocked" : ""}`}
+      className={`zone${zone.bgImage ? " has-bg-image" : ""}${dragOver ? " drag-over" : ""}${dragBlocked ? " drag-blocked" : ""}${winnerGlow ? " zone-winner-glow" : ""}`}
       style={zoneStyle}
     >
       <div className="zone-slot ai-slot">
@@ -2690,15 +2871,36 @@ function CollectionCard({ card, selected, onSelect }) {
 function CollectionScreen({ cards, onBack, onNew, onEdit, onDelete }) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
+  const [sort,   setSort]   = useState("default"); // default | energy-asc | energy-desc | power-asc | power-desc
   const [selected, setSelected] = useState(null);
 
-  const visible = cards.filter(c => {
-    const ms = c.name.toLowerCase().includes(search.toLowerCase());
-    const mf = filter === "all" ? true : filter === "ability" ? !!c.abilityText : filter === "no-art" ? !c.imageUrl : true;
-    return ms && mf;
-  });
+  const visible = cards
+    .filter(c => {
+      const ms = c.name.toLowerCase().includes(search.toLowerCase());
+      const mf = filter === "all" ? true : filter === "ability" ? !!c.abilityText : filter === "no-art" ? !c.imageUrl : true;
+      return ms && mf;
+    })
+    .sort((a, b) => {
+      if (sort === "energy-asc")  return (a.energy ?? a.clout) - (b.energy ?? b.clout);
+      if (sort === "energy-desc") return (b.energy ?? b.clout) - (a.energy ?? a.clout);
+      if (sort === "power-asc")   return a.clout - b.clout;
+      if (sort === "power-desc")  return b.clout - a.clout;
+      return 0; // default: original order
+    });
 
   const selectedCard = cards.find(c => c.id === selected);
+
+  // Sort button: cycles asc → desc → off for each field
+  const cycleSort = (field) => {
+    if (sort === `${field}-asc`)  setSort(`${field}-desc`);
+    else if (sort === `${field}-desc`) setSort("default");
+    else setSort(`${field}-asc`);
+  };
+  const sortIcon = (field) => {
+    if (sort === `${field}-asc`)  return "↑";
+    if (sort === `${field}-desc`) return "↓";
+    return "↕";
+  };
 
   return (
     <div className="screen" style={{paddingBottom: selected ? 80 : 0}} onClick={() => setSelected(null)}>
@@ -2708,11 +2910,25 @@ function CollectionScreen({ cards, onBack, onNew, onEdit, onDelete }) {
         <button className="btn btn-primary" onClick={onNew}>+ New</button>
       </div>
       <div className="collection-toolbar" onClick={e => e.stopPropagation()}>
-        <input className="search-input" placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} />
-        <div className="filter-tabs">
-          {[["all","All"],["ability","Ability"],["no-art","No Art"]].map(([v,l]) => (
-            <button key={v} className={`filter-tab${filter===v?" active":""}`} onClick={() => setFilter(v)}>{l}</button>
-          ))}
+        <div className="collection-toolbar-row">
+          <input className="search-input" placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} />
+        </div>
+        <div className="collection-toolbar-row">
+          <div className="filter-tabs">
+            {[["all","All"],["ability","Ability"],["no-art","No Art"]].map(([v,l]) => (
+              <button key={v} className={`filter-tab${filter===v?" active":""}`} onClick={() => setFilter(v)}>{l}</button>
+            ))}
+            <button
+              className={`filter-tab${sort.startsWith("energy") ? " active" : ""}`}
+              style={{color: sort.startsWith("energy") ? "#1d8ed4" : undefined, borderColor: sort.startsWith("energy") ? "#1d8ed4" : undefined, background: sort.startsWith("energy") ? "rgba(29,142,212,0.1)" : undefined}}
+              onClick={() => cycleSort("energy")}
+            >⚡ {sortIcon("energy")}</button>
+            <button
+              className={`filter-tab${sort.startsWith("power") ? " active" : ""}`}
+              style={{color: sort.startsWith("power") ? "#e74624" : undefined, borderColor: sort.startsWith("power") ? "#e74624" : undefined, background: sort.startsWith("power") ? "rgba(231,70,36,0.1)" : undefined}}
+              onClick={() => cycleSort("power")}
+            >💥 {sortIcon("power")}</button>
+          </div>
         </div>
       </div>
       <div className="collection-count">{visible.length} / {cards.length}</div>
@@ -2730,7 +2946,20 @@ function CollectionScreen({ cards, onBack, onNew, onEdit, onDelete }) {
       {selectedCard && (
         <div className="coll-preview-backdrop" onClick={() => setSelected(null)}>
           <div className="coll-preview-stage" onClick={e => e.stopPropagation()}>
-            <CardView card={selectedCard} showName className="coll-preview-card" />
+            <CardView card={selectedCard} showName revealed className="coll-preview-card" />
+            <div className="coll-preview-info">
+              <div className="coll-preview-name">{selectedCard.name}</div>
+              {selectedCard.abilityText && (
+                <div className="coll-preview-ability">{selectedCard.abilityText}</div>
+              )}
+              {selectedCard.flavor && (
+                <div className="coll-preview-flavor">"{selectedCard.flavor}"</div>
+              )}
+              <div className="coll-preview-stats">
+                <span className="coll-stat-energy">⚡ {selectedCard.energy ?? selectedCard.clout} Energy</span>
+                <span className="coll-stat-power">💥 {selectedCard.clout} Power</span>
+              </div>
+            </div>
             <div className="coll-preview-actions">
               <button className="btn btn-secondary" onClick={() => setSelected(null)}>Close</button>
               <button className="btn btn-primary" onClick={() => { setSelected(null); onEdit(selectedCard); }}>Edit</button>
@@ -2787,46 +3016,61 @@ function CardEditorScreen({ card, onSave, onBack }) {
 }
 
 function CardPopup({ card, onDismiss, playable = true, onUnplay = null }) {
-  const hue = hueOf(card);
-  // ab dropped — using card.abilityText directly
-  const [showBio, setShowBio] = useState(false);
-  const tiltRef = useTilt(12, 1.0);
   return (
     <>
-      <div className="card-popup-backdrop" />
-      <div ref={tiltRef} className="card-popup card-tiltable" style={{"--ch": hue}}>
-        <div className="popup-shine" />
-        <button className="popup-close" onClick={onDismiss} aria-label="Close">✕</button>
-        <div className="popup-art">
-          {card.imageUrl
-            ? <img src={card.imageUrl} alt={card.name} />
-            : <div className="popup-art-emoji">{emojiOf(hue)}</div>}
-        </div>
-        {/* Badges OUTSIDE the art so they sit above the gradient overlay */}
-        <div className="popup-badge energy-badge">{card.energy ?? card.clout}</div>
-        <div className="popup-badge power-badge">{card.clout}</div>
-        <div className="popup-body">
-          <div className="popup-name-row">
-            <div className="popup-name">{card.name}</div>
-            {card.flavor && (
-              <button
-                className={`popup-info-btn${showBio ? " active" : ""}`}
-                onClick={e => { e.stopPropagation(); setShowBio(s => !s); }}
-                aria-label="Toggle bio"
-              >i</button>
-            )}
+      {/* Backdrop — tappable to dismiss */}
+      <div
+        style={{position:"fixed",inset:0,zIndex:200,background:"rgba(0,0,0,0.75)",backdropFilter:"blur(5px)",WebkitBackdropFilter:"blur(5px)"}}
+        onClick={onDismiss}
+      />
+      {/* Stage */}
+      <div
+        style={{
+          position:"fixed", left:"50%", bottom:150, transform:"translateX(-50%)",
+          zIndex:201, display:"flex", flexDirection:"column", alignItems:"center", gap:12,
+          animation:"popup-rise 0.22s cubic-bezier(.22,1,.36,1)",
+          width:"min(240px,64vw)",
+        }}
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Full card — width:100% overrides the 130px default */}
+        <CardView
+          card={card} revealed showName
+          style={{width:"100%", height:"auto", borderRadius:14, boxShadow:"0 20px 50px rgba(0,0,0,0.9)"}}
+        />
+
+        {/* Info panel */}
+        <div style={{
+          background:"rgba(16,16,30,0.95)", border:"1px solid rgba(255,255,255,0.12)",
+          borderRadius:14, padding:"12px 14px", width:"100%",
+          display:"flex", flexDirection:"column", gap:6,
+          boxShadow:"0 8px 24px rgba(0,0,0,0.7)",
+        }}>
+          <div style={{fontFamily:"var(--f-display)",fontSize:"1rem",color:"#fff",letterSpacing:"0.03em",lineHeight:1.1}}>
+            {card.name}
           </div>
-          {/* Snap ability text on its own — old engine description is gone */}
           {card.abilityText && (
-            <div className="popup-ability">
-              ⚡ {card.abilityText}
-              {card.snapName && <span className="popup-snap-credit"> · {card.snapName}</span>}
+            <div style={{fontSize:"0.74rem",color:"#b4ff4f",lineHeight:1.45,fontWeight:500}}>
+              {card.abilityText}
             </div>
           )}
-          {showBio && card.flavor && <div className="popup-flavor">"{card.flavor}"</div>}
+          {card.flavor && (
+            <div style={{fontSize:"0.67rem",color:"rgba(255,255,255,0.4)",fontStyle:"italic",lineHeight:1.35}}>
+              "{card.flavor}"
+            </div>
+          )}
+          <div style={{display:"flex",gap:10,marginTop:2,fontFamily:"var(--f-mono)",fontSize:"0.68rem",fontWeight:700}}>
+            <span style={{color:"#1d8ed4"}}>⚡ {card.energy ?? card.clout}</span>
+            <span style={{color:"#e74624"}}>💥 {card.clout}</span>
+          </div>
+        </div>
+
+        {/* Buttons */}
+        <div style={{display:"flex",gap:8,width:"100%"}}>
+          <button className="btn btn-secondary" style={{flex:1,padding:"10px"}} onClick={onDismiss}>Close</button>
           {onUnplay && (
-            <button className="popup-action-btn unplay" onClick={e => { e.stopPropagation(); onUnplay(); }}>
-              ↶ Return to Hand
+            <button className="btn btn-danger" style={{flex:1,padding:"10px"}} onClick={() => { onUnplay(); onDismiss(); }}>
+              ↩ Return
             </button>
           )}
         </div>
@@ -2945,8 +3189,39 @@ function MoveEffect({ event, zoneRefs }) {
   );
 }
 
+function Confetti() {
+  const COLORS = ["#ffe066","#b4ff4f","#5fd4ff","#ff5fba","#ff7043","#a78bfa"];
+  const pieces = Array.from({length:28},(_,i)=>({
+    id:i,
+    left: Math.random()*100,
+    delay: Math.random()*1.2,
+    dur: 1.6 + Math.random()*0.8,
+    color: COLORS[i % COLORS.length],
+    rotate: Math.random()*360,
+    size: 6 + Math.random()*8,
+  }));
+  return (
+    <div className="confetti-wrap">
+      {pieces.map(p=>(
+        <div key={p.id} className="confetti-piece" style={{
+          left:`${p.left}%`,
+          top:0,
+          width:p.size,
+          height:p.size*1.5,
+          background:p.color,
+          animationDelay:`${p.delay}s`,
+          animationDuration:`${p.dur}s`,
+          transform:`rotate(${p.rotate}deg)`,
+        }}/>
+      ))}
+    </div>
+  );
+}
+
 function DragGhost({ card, x, y }) {
   const hue = hueOf(card);
+  const energy = card.energy ?? card.clout;
+  const power  = card.clout;
   return (
     <div className="drag-ghost" style={{ left: x, top: y, "--ch": hue, background: `hsl(${hue},16%,8%)` }}>
       <div className="card-art" style={{position:"absolute",inset:0,borderRadius:9}}>
@@ -2955,8 +3230,8 @@ function DragGhost({ card, x, y }) {
           : <span style={{fontSize:"2.5rem",opacity:0.4}}>{emojiOf(hue)}</span>}
       </div>
       <div className="card-vignette" />
-      <div className="card-energy" style={{position:"absolute",top:5,left:5,width:22,height:22,fontSize:"0.75rem"}}>{card.clout}</div>
-      <div className="card-power"  style={{position:"absolute",bottom:5,right:5,width:22,height:22,fontSize:"0.75rem"}}>{card.clout}</div>
+      <div className="card-energy" style={{position:"absolute",top:5,left:5,width:22,height:22,fontSize:"0.75rem",background:"#1d8ed4"}}>{energy}</div>
+      <div className="card-power"  style={{position:"absolute",top:5,right:5,width:22,height:22,fontSize:"0.75rem",background:"#e74624",bottom:"auto",left:"auto"}}>{power}</div>
     </div>
   );
 }
@@ -3013,8 +3288,8 @@ function ShuffleOverlay({ deckSize, onDone }) {
   );
 }
 
-function GameScreen({ cards, onBack }) {
-  const [game, setGame]           = useState(() => initGame(cards));
+function GameScreen({ cards, deckCards, onBack }) {
+  const [game, setGame] = useState(() => initGame(deckCards || cards));
   const [selected, setSelected]   = useState(null);   // card tapped for popup
   const [playingId, setPlayingId] = useState(null);
   const [deckPanel, setDeckPanel] = useState(null);   // null | "deck" | "discard" | "destroyed"
@@ -3125,6 +3400,48 @@ function GameScreen({ cards, onBack }) {
         // Compute priority for the upcoming turn based on current board state
         s.priority = computePriority(s, s.priority);
         if (s.turn >= TURNS) {
+          // ── End-of-game effects ──────────────────────────────────────
+          // Captain Marvel (Logan Touchdown): move to the location that wins the game
+          if (s._captainMarvelCardId) {
+            const cmId = s._captainMarvelCardId;
+            // Find where Captain Marvel is
+            let cmZone = -1;
+            for (let z = 0; z < 3; z++) {
+              if (s.zones[z].pCards.some(c => c.id === cmId)) { cmZone = z; break; }
+            }
+            if (cmZone >= 0) {
+              // Find best zone: where moving CM would win overall
+              const scores = s.zones.map((z, zi) => ({
+                zi,
+                pp: zonePower(z.pCards, s, true, zi) + klawBonusForZone(s, true, zi),
+                ap: zonePower(z.aCards, s, false, zi) + klawBonusForZone(s, false, zi),
+              }));
+              // Pick losing zone with highest enemy power (biggest swing)
+              const losing = scores.filter(sc => sc.pp <= sc.ap && sc.zi !== cmZone)
+                .sort((a, b) => b.ap - a.ap);
+              if (losing.length) _moveCard(s, "player", cmId, cmZone, losing[0].zi);
+            }
+          }
+          // Dracula (Wakanda Ellen): discard highest-power hand card, gain its power
+          if (s._draculaCardId) {
+            const dcId = s._draculaCardId;
+            let dcZone = -1;
+            for (let z = 0; z < 3; z++) {
+              if (s.zones[z].pCards.some(c => c.id === dcId)) { dcZone = z; break; }
+            }
+            if (dcZone >= 0 && s.playerHand.length) {
+              const best = s.playerHand.slice().sort((a, b) => b.clout - a.clout)[0];
+              const hi = s.playerHand.findIndex(c => c.id === best.id);
+              if (hi >= 0) {
+                s.playerHand.splice(hi, 1);
+                s.playerDiscard = s.playerDiscard || [];
+                s.playerDiscard.push(best);
+                const dc = s.zones[dcZone].pCards.find(c => c.id === dcId);
+                if (dc) dc.clout += best.clout;
+              }
+            }
+          }
+          // ─────────────────────────────────────────────────────────────
           s.phase = "end";
         } else {
           s.turn += 1;
@@ -3429,8 +3746,9 @@ function GameScreen({ cards, onBack }) {
         </div>
       )}
 
-      {/* Top bar */}
+      {/* Top bar — 3-col grid: you | gem | cpu */}
       <div className="game-top">
+        {/* YOU pill — left column */}
         <div className={`player-pill${game.priority === "player" ? " has-priority" : ""}`}>
           <div className="player-avatar">🧑</div>
           <div className="player-name-block">
@@ -3438,24 +3756,46 @@ function GameScreen({ cards, onBack }) {
             <div className="hand-count">🃏 {game.playerHand?.length ?? 0}</div>
           </div>
         </div>
+
+        {/* Centre: energy gem only */}
         <div className="energy-crystal">
-          <div className="crystal-gem"><span>{game.turn - (game.playerPlaysThisTurn?.reduce((s,p)=>s+p.energy,0) || 0)}</span></div>
-          <div className="crystal-label">FLUX · TURN {game.turn}/{TURNS}</div>
+          <div className="crystal-gem">
+            <span>{game.turn - (game.playerPlaysThisTurn?.reduce((s,p)=>s+p.energy,0) || 0)}</span>
+          </div>
         </div>
-        <div className={`player-pill${game.priority === "ai" ? " has-priority" : ""}`} style={{flexDirection:"row-reverse"}}>
+
+        {/* CPU pill — right column, flipped */}
+        <div className={`player-pill${game.priority === "ai" ? " has-priority" : ""}`}
+          style={{flexDirection:"row-reverse", justifySelf:"end"}}>
           <div className="player-avatar">🤖</div>
-          <div className="player-name-block">
+          <div className="player-name-block" style={{alignItems:"flex-end"}}>
             <div className="player-name">CPU</div>
-            <div className="hand-count">🃏 {game.aiHand?.length ?? 0}</div>
+            <div className="hand-count">{game.aiHand?.length ?? 0} 🃏</div>
           </div>
         </div>
       </div>
+
+      {/* Turn label — equidistant between diamond and card lanes */}
+      <div className="turn-label">TURN {game.turn} / {TURNS}</div>
+
+      {/* Daredevil peek — turn 5, show what CPU will play this turn */}
+      {game._daredevilActive && game.turn === 5 && inPlay && (
+        <div style={{
+          background:"rgba(255,95,186,0.15)", borderBottom:"1px solid rgba(255,95,186,0.35)",
+          padding:"4px 12px", display:"flex", alignItems:"center", gap:8,
+          fontFamily:"var(--f-display)", fontSize:"0.72rem", color:"#ff5fba",
+          letterSpacing:"0.07em", flexShrink:0,
+        }}>
+          👁 DAREDEVIL — CPU has {game.aiHand?.length ?? 0} cards · {game.aiHand?.reduce((s,c)=>s+(c.energy??c.clout),0) ?? 0} total energy
+        </div>
+      )}
 
       {/* Zones */}
       <div className="zones-row">
         {game.zones.map((zone, i) => {
           const isOverThis = dragOver === i && isDragging && inPlay;
           const isFull     = zone.pCards.length >= MAX_PER_SIDE;
+          const zoneResult = results?.[i];
           return (
             <Zone
               key={zone.id} zone={zone} zoneRef={zoneRefs[i]} zoneIdx={i} state={game}
@@ -3470,6 +3810,7 @@ function GameScreen({ cards, onBack }) {
               onDragPlayerCard={(e, cid) => startDrag(e, cid, "zone")}
               onUnplayCard={cid => unplayCard(cid)}
               draggingCardId={drag?.cardId}
+              winnerGlow={inEnd && zoneResult?.winner === "player"}
             />
           );
         })}
@@ -3522,7 +3863,10 @@ function GameScreen({ cards, onBack }) {
             // Dynamic slot width: shrink cards if hand is large, but never below 56px
             // Available width ≈ viewport - 24px margin. Cap card width at 92.
             const vw = (typeof window !== "undefined") ? window.innerWidth : 380;
-            const slotW = Math.max(56, Math.min(92, Math.floor((vw - 24) / Math.max(total, 1)) - 4));
+            // Hand area is 148px tall, cards are 1:1.4 ratio → max card height ~128px → max width ~91px
+            // Shrink uniformly so all cards fit side by side with gap
+            const maxW = Math.floor((vw - 24 - (Math.max(total,1)-1)*4) / Math.max(total,1));
+            const slotW = Math.max(52, Math.min(88, maxW));
             return game.playerHand.map((card, i) => {
               const isSelected = selected === card.id;
               const isDragged  = drag?.cardId === card.id;
@@ -3618,19 +3962,276 @@ function GameScreen({ cards, onBack }) {
 
       {/* End game overlay */}
       {inEnd && (
-        <div className="result-overlay">
-          <div className="result-card">
-            <div className="result-title">
-              {overallWinner === "player" ? "🎉 Victory!" : overallWinner === "ai" ? "💀 Defeated" : "🤝 Draw"}
-            </div>
-            <div className="result-sub">{pWins} – {aWins} Rifts</div>
-            <div className="result-actions">
-              <button className="btn btn-primary" onClick={() => { setGame(initGame(cards)); setSelected(null); }}>Play Again</button>
-              <button className="btn btn-secondary" onClick={onBack}>Home</button>
+        <>
+          {overallWinner === "player" && <Confetti />}
+          <div className="result-overlay">
+            <div className="result-card">
+              <div className="result-title">
+                {overallWinner === "player" ? "🎉 Victory!" : overallWinner === "ai" ? "💀 Defeated" : "🤝 Draw"}
+              </div>
+              <div className="result-sub">{pWins} – {aWins} Rifts</div>
+              <div className="result-actions">
+                <button className="btn btn-primary" onClick={() => { setGame(initGame(cards)); setSelected(null); }}>Play Again</button>
+                <button className="btn btn-secondary" onClick={onBack}>Home</button>
+              </div>
             </div>
           </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Deck helpers ─────────────────────────────────────────────────────────────
+function loadDecks() {
+  try { return JSON.parse(localStorage.getItem(DECKS_KEY) || "null") || []; } catch { return []; }
+}
+function saveDecks(decks) {
+  try { localStorage.setItem(DECKS_KEY, JSON.stringify(decks)); } catch {}
+}
+function makeRandomDeck(allCards) {
+  return shuffle([...allCards]).slice(0, 12).map(c => c.id);
+}
+
+// ─── DeckBuilderScreen ────────────────────────────────────────────────────────
+function DeckBuilderScreen({ deck, allCards, onSave, onBack }) {
+  const [name,    setName]    = useState(deck?.name    || "New Deck");
+  const [cardIds, setCardIds] = useState(deck?.cardIds || []);
+
+  const toggle = id => {
+    setCardIds(prev => {
+      if (prev.includes(id)) return prev.filter(x => x !== id);
+      if (prev.length >= 12) return prev; // cap at 12
+      return [...prev, id];
+    });
+  };
+
+  const handleSave = () => {
+    onSave({ ...deck, name: name.trim() || "Deck", cardIds, id: deck?.id || uid() });
+  };
+
+  return (
+    <div className="screen">
+      <div className="screen-header">
+        <button className="btn btn-ghost" onClick={onBack}>← Back</button>
+        <input
+          value={name} onChange={e => setName(e.target.value)}
+          style={{flex:1,background:"transparent",border:"none",color:"var(--text)",fontSize:"1.1rem",fontWeight:700,outline:"none",textAlign:"center"}}
+          maxLength={20}
+        />
+        <button className="btn btn-primary" onClick={handleSave}>Save</button>
+      </div>
+      <div className="deck-builder-bar">
+        <span className="deck-bar-count">{cardIds.length}/12 cards selected</span>
+        <button className="btn btn-sm btn-secondary" onClick={() => setCardIds(makeRandomDeck(allCards))}>🎲 Random</button>
+        <button className="btn btn-sm btn-danger" onClick={() => setCardIds([])}>Clear</button>
+      </div>
+      <div className="deck-builder-grid">
+        {allCards.map(card => {
+          const inDeck = cardIds.includes(card.id);
+          const hue = hueOf(card);
+          return (
+            <div key={card.id} className="deck-builder-slot" onClick={() => toggle(card.id)}>
+              <div className={`coll-card${inDeck?" in-deck":""}`} style={{"--ch":hue}}>
+                {card.imageUrl
+                  ? <img className="coll-card-art" src={card.imageUrl} alt={card.name} />
+                  : <div className="coll-card-emoji">{emojiOf(hue)}</div>}
+                <div className="coll-card-overlay"/>
+                <div className="coll-card-badge">{card.clout}</div>
+                <div className="coll-card-energy">{card.energy ?? card.clout}</div>
+                <div className="coll-card-name">{card.name}</div>
+              </div>
+              {inDeck && <div className="deck-count-badge">✓</div>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── DeckSelectScreen ─────────────────────────────────────────────────────────
+const DECK_ICONS = ["⚔️","🔮","💀","🌀","🎭","🦅"];
+const DEFAULT_DECKS = [
+  { id:"deck1", name:"Deck 1", cardIds:[] },
+  { id:"deck2", name:"Deck 2", cardIds:[] },
+  { id:"deck3", name:"Deck 3", cardIds:[] },
+];
+
+function DeckSelectScreen({ allCards, onPlay, onBack }) {
+  const [decks,    setDecks]    = useState(() => {
+    const saved = loadDecks();
+    // Merge saved over defaults (keep 3 slots)
+    return DEFAULT_DECKS.map(d => saved.find(s => s.id === d.id) || d);
+  });
+  const [selected,  setSelected]  = useState(null);  // deck id
+  const [building,  setBuilding]  = useState(null);  // deck being edited
+
+  const persistAndSet = updated => {
+    setDecks(updated);
+    saveDecks(updated);
+  };
+
+  const handleSaveDeck = deck => {
+    const updated = decks.map(d => d.id === deck.id ? deck : d);
+    persistAndSet(updated);
+    setBuilding(null);
+  };
+
+  const resolveCards = (cardIds, allCards) => {
+    // Get actual card objects for the deck; pad with randoms if < 12
+    let picked = cardIds.map(id => allCards.find(c => c.id === id)).filter(Boolean);
+    if (picked.length < 12) {
+      const used = new Set(picked.map(c => c.id));
+      const pool = shuffle(allCards.filter(c => !used.has(c.id)));
+      while (picked.length < 12 && pool.length) picked.push(pool.shift());
+    }
+    return shuffle(picked.slice(0, 12));
+  };
+
+  if (building) {
+    return (
+      <DeckBuilderScreen
+        deck={building}
+        allCards={allCards}
+        onSave={handleSaveDeck}
+        onBack={() => setBuilding(null)}
+      />
+    );
+  }
+
+  const canPlay = !!selected;
+  const handlePlay = () => {
+    if (!selected) return;
+    const deck = decks.find(d => d.id === selected);
+    const deckCards = resolveCards(deck?.cardIds || [], allCards);
+    onPlay(deckCards);
+  };
+  const handleRandom = () => {
+    onPlay(shuffle([...allCards]).slice(0,12));
+  };
+
+  return (
+    <div className="screen deck-select-screen">
+      <div className="deck-select-header">
+        <button className="btn btn-ghost" onClick={onBack}>← Back</button>
+        <span className="deck-select-title">Choose Your Deck</span>
+      </div>
+
+      <div className="deck-list">
+        {/* Random deck option */}
+        <div className="deck-card" onClick={handleRandom} style={{background:"linear-gradient(135deg,rgba(112,64,240,0.2),rgba(160,112,255,0.1))"}}>
+          <div className="deck-card-icon">🎲</div>
+          <div className="deck-card-info">
+            <div className="deck-card-name">Random Deck</div>
+            <div className="deck-card-sub">12 random cards — pure chaos</div>
+          </div>
+          <button className="btn btn-primary btn-sm">Play</button>
+        </div>
+
+        {/* 3 saved decks */}
+        {decks.map((deck, i) => {
+          const deckCards = (deck.cardIds || []).map(id => allCards.find(c => c.id === id)).filter(Boolean);
+          const isSelected = selected === deck.id;
+          return (
+            <div key={deck.id} className={`deck-card${isSelected?" deck-selected":""}`}
+              onClick={() => setSelected(p => p === deck.id ? null : deck.id)}>
+              <div className="deck-card-icon">{DECK_ICONS[i]}</div>
+              <div className="deck-card-info">
+                <div className="deck-card-name">{deck.name}</div>
+                <div className="deck-card-sub">
+                  {deckCards.length > 0
+                    ? `${deckCards.length} cards · avg ${(deckCards.reduce((s,c)=>s+(c.energy??c.clout),0)/deckCards.length).toFixed(1)} energy`
+                    : "Empty — tap Edit to build"}
+                </div>
+              </div>
+              <div className="deck-card-actions" onClick={e => e.stopPropagation()}>
+                <button className="btn btn-sm btn-secondary"
+                  onClick={() => setBuilding(deck)}>Edit</button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {canPlay && (
+        <div className="deck-play-bar">
+          <button className="btn btn-primary" style={{width:"100%",padding:"14px"}} onClick={handlePlay}>
+            ▶ Play with {decks.find(d=>d.id===selected)?.name}
+          </button>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── LoadingScreen ─────────────────────────────────────────────────────────────
+const LOADING_LINES = [
+  "Initializing interdimensional portals...",
+  "Bribing Detective Scrotum...",
+  "Inflating Buttermilk Androgyna...",
+  "Calibrating Mr. Plaigan's drain...",
+  "Waking Sleepy Butterson...",
+  "Counting Bonald Brum's brain cells...",
+  "Negotiating with Goblin Addict...",
+  "Locating Souvenir Cheeseburger...",
+  "Loading ZANY card data...",
+  "Preparing interdimensional battlefield...",
+  "Shuffling 77 degenerates...",
+  "Almost ready...",
+];
+function LoadingScreen({ onDone }) {
+  const [progress, setProgress] = useState(0);
+  const [lineIdx, setLineIdx]   = useState(0);
+
+  useEffect(() => {
+    let p = 0;
+    const interval = setInterval(() => {
+      p += Math.random() * 18 + 4;
+      if (p >= 100) { p = 100; clearInterval(interval); setTimeout(onDone, 400); }
+      setProgress(Math.min(p, 100));
+      setLineIdx(Math.floor((Math.min(p, 99) / 100) * LOADING_LINES.length));
+    }, 180);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <div style={{
+      height:"100vh", display:"flex", flexDirection:"column",
+      alignItems:"center", justifyContent:"center", gap:32,
+      background:"radial-gradient(ellipse at 50% 55%, #16082e 0%, #05050f 68%)",
+      padding:"0 40px",
+    }}>
+      <div style={{textAlign:"center"}}>
+        <div style={{
+          fontSize:"clamp(5rem,22vw,10rem)", fontWeight:700, lineHeight:0.9,
+          color:"#b4ff4f", letterSpacing:"-0.03em",
+          textShadow:"0 0 50px rgba(180,255,79,0.45),0 0 120px rgba(180,255,79,0.18)",
+        }}>ZANY</div>
+        <div style={{fontSize:"0.85rem",color:"rgba(255,255,255,0.35)",marginTop:8,letterSpacing:"0.12em"}}>
+          INTERDIMENSIONAL CARD BATTLES
+        </div>
+      </div>
+      <div style={{width:"100%", maxWidth:280, display:"flex", flexDirection:"column", gap:10}}>
+        {/* Progress bar */}
+        <div style={{height:4, background:"rgba(255,255,255,0.1)", borderRadius:2, overflow:"hidden"}}>
+          <div style={{
+            height:"100%", borderRadius:2,
+            background:"linear-gradient(90deg,#7040f0,#b4ff4f)",
+            width:`${progress}%`,
+            transition:"width 0.18s ease-out",
+            boxShadow:"0 0 12px rgba(180,255,79,0.6)",
+          }}/>
+        </div>
+        {/* Flavor loading text */}
+        <div style={{
+          fontFamily:"var(--f-mono,monospace)", fontSize:"0.62rem",
+          color:"rgba(255,255,255,0.4)", letterSpacing:"0.05em",
+          textAlign:"center", minHeight:"1.2em",
+        }}>
+          {LOADING_LINES[lineIdx] || "Loading..."}
+        </div>
+      </div>
     </div>
   );
 }
@@ -3677,14 +4278,20 @@ export default function App() {
 
   useEffect(() => { localStorage.setItem(STORAGE_KEY, JSON.stringify(cards)); }, [cards]);
 
-  const [screen,  setScreen]  = useState("home");
-  const [editing, setEditing] = useState(null);
+  const [screen,    setScreen]    = useState("home");
+  const [editing,   setEditing]   = useState(null);
+  const [loaded,    setLoaded]    = useState(false);
+  const [deckCards, setDeckCards] = useState(null);
+
+  if (!loaded) return <LoadingScreen onDone={() => setLoaded(true)} />;
 
   const saveCard   = card => { setCards(prev => { const i = prev.findIndex(c => c.id===card.id); return i!==-1 ? prev.map((c,j)=>j===i?card:c) : [...prev,card]; }); setScreen("collection"); setEditing(null); };
   const deleteCard = id   => setCards(prev => prev.filter(c => c.id !== id));
+  const handlePlay = (chosenDeck) => { setDeckCards(chosenDeck || null); setScreen("game"); };
 
-  if (screen==="game")       return <GameScreen cards={cards} onBack={() => setScreen("home")} />;
+  if (screen==="game")       return <GameScreen cards={cards} deckCards={deckCards} onBack={() => setScreen("home")} />;
+  if (screen==="deckselect") return <DeckSelectScreen allCards={cards} onPlay={handlePlay} onBack={() => setScreen("home")} />;
   if (screen==="collection") return <CollectionScreen cards={cards} onBack={() => setScreen("home")} onNew={() => { setEditing(null); setScreen("editor"); }} onEdit={c => { setEditing(c); setScreen("editor"); }} onDelete={deleteCard} />;
   if (screen==="editor")     return <CardEditorScreen card={editing} onSave={saveCard} onBack={() => setScreen("collection")} />;
-  return <HomeScreen onPlay={() => setScreen("game")} onCollection={() => setScreen("collection")} />;
+  return <HomeScreen onPlay={() => setScreen("deckselect")} onCollection={() => setScreen("collection")} />;
 }
