@@ -9,5 +9,6 @@ import useTilt from "./hooks/useTilt";
 import { _snapshotPowers, _diffPowers } from "./game/snapHelpers";
 import SNAP_HANDLERS from "./game/snapHandlers";
 import CARD_IMAGES from "./game/cardImages";
+import { SNAP_ABILITY_LIBRARY, SPREADSHEET_CARDS } from "./game/cardData";
 
 // ── Everything else in your file continues unchanged below ────────
