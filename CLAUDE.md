@@ -31,6 +31,8 @@ ZANY/
 ├── vite.config.js          ← Vite config with React plugin
 ├── .gitignore
 ├── CLAUDE.md               ← this file
+├── README.md               ← project overview + full card list
+├── TASKS.md                ← task tracker (read this for what to work on)
 └── src/
     ├── main.jsx            ← ReactDOM.createRoot entry point
     ├── App.jsx             ← Root component: CSS injection, card state, screen routing
@@ -48,7 +50,6 @@ ZANY/
     │   └── gameLogic.js    ← All pure game logic: initGame, applyReveal, zonePower, computeWinner, etc.
     ├── components/
     │   ├── CardView.jsx    ← Card renderer (front/back flip, energy/power badges, art, nameplate)
-    │   ├── CardBack.jsx    ← Uniform face-down card graphic (exported from CardView.jsx)
     │   ├── Zone.jsx        ← Single location: AI slot, score bar, player slot
     │   ├── DragGhost.jsx   ← Semi-transparent card that follows the pointer during drag
     │   ├── DeckPanel.jsx   ← Slide-up drawer showing deck/discard/destroyed cards
@@ -114,8 +115,8 @@ ZANY/
   phase: "play",            // "shuffle" | "play" | "reveal" | "end"
   bonusDraw: 0,             // extra cards to draw next turn
   priority: "player",       // "player" | "ai" — who reveals first
-  playerHand: [],           // cards in player's hand
-  playerDeck: [],           // remaining player deck
+  playerHand: [],
+  playerDeck: [],
   aiHand: [],
   aiDeck: [],
   playerDiscard: [],
@@ -127,26 +128,31 @@ ZANY/
       id: "z0",
       name: "The Vortex",
       ability: "...",
-      pCards: [],           // player cards here
-      aCards: [],           // AI cards here
+      pCards: [],
+      aCards: [],
       bgImage: null,
-      sky: "#3a0d6e",       // gradient colors for placeholder bg
+      sky: "#3a0d6e",
       horizon: "#a83fc4",
       ground: "#0a0118",
       accent: "rgba(200,80,255,0.35)",
-      _cosmoActive: false,  // Cosmo ability flag
-      _armorSide: null,     // Armor ability flag
+      // Ability flags set by handlers:
+      _cosmoActive: false,
+      _cosmoSide: null,
+      _armorSide: null,
+      _echoSide: null,
+      _cloakTurn: null,     // turn number when Cloak window is open
     }
   ],
   playerPlaysThisTurn: [{ cardId, zoneIdx, energy }],
   aiPlaysThisTurn: [{ cardId, zoneIdx }],
-  revealedIds: [],          // card IDs that have been flipped
-  // Special card flags (set by handlers):
+  revealedIds: [],
+  // Special card flags set by handlers:
   _captainMarvelCardId: null,
   _draculaCardId: null,
-  _jessicaJones: null,
+  _jessicaJones: null,      // { cardId, zoneIdx }
   _ironFistActive: false,
   _daredevilActive: false,
+  _apocalypseId: null,
 }
 ```
 
@@ -154,76 +160,77 @@ ZANY/
 
 ## How abilities work
 
-Every card with an ability has a `snapName` that matches a key in `SNAP_HANDLERS` (in `snapHandlers.js`). When a card is revealed, `applyReveal()` in `gameLogic.js` looks up the handler and calls it:
+Every card with an ability has a `snapName` matching a key in `SNAP_HANDLERS` (`snapHandlers.js`). When a card is revealed, `applyReveal()` in `gameLogic.js` looks up the handler:
 
 ```js
 handler(state, card, zoneIdx, isPlayer) → { state, fx? }
 ```
 
-- `state` — the full game state (mutated in place, then returned)
+- `state` — full game state (mutated in place, then returned)
 - `fx` — optional array of move effects `[{ type:"move", cardId, fromZone, toZone, side }]`
-- Handlers are pure functions — no React, no UI concerns
-- Cards without a handler reveal silently (no ability fires)
+- Handlers are pure functions — no React, no UI
+- Cards without a handler reveal silently
 
-**Important:** handlers receive and mutate a deep clone of state. Never mutate state directly in React — always use `JSON.parse(JSON.stringify(prev))` first.
+**Important:** always deep-clone state before mutation: `JSON.parse(JSON.stringify(prev))`
+
+---
+
+## Ability handler status
+
+66 of 77 handlers are fully implemented. 11 are partial:
+
+| Card | snapName | Issue |
+|------|----------|-------|
+| The Warden | Apocalypse | Discard respawn not wired |
+| Peewee Dirtbag | Armor | `_canDestroy()` not called everywhere |
+| Fred Juggs | Black Widow | Activate-only, no UI |
+| Logan Touchdown | Captain Marvel | ✅ Wired in GameScreen — verify |
+| Souvenir Cheeseburger | Cloak | Move window needs turn state |
+| Dan Schwartz | Dagger | Move boost needs `_moveCard` callback |
+| Lucifer Melancholy | Daredevil | Turn 5 peek UI not shown |
+| Venus Velociraptor M | Death | `deathReducedCost()` not wired to budget |
+| Wakanda Ellen | Dracula | ✅ Wired in GameScreen — verify |
+| Podcast Squirrel | Echo | Ongoing removal on opp play not wired |
+| Eggbert | High Evolutionary | Game Start hook missing |
+
+Additionally:
+- **Angela (c004)** and **Bishop (c013)** fire at reveal but don't accumulate across turns — need per-card accumulator in game state
+- **Klaw** and **Iron Man** don't emit floating power-delta badges (computed in `zonePower()`, invisible to `_diffPowers`)
 
 ---
 
 ## How drag and drop works
 
-Drag is handled entirely in `GameScreen.jsx` with raw pointer events (not React DnD or any library). Key details:
+Drag is handled in `GameScreen.jsx` with raw pointer events (no library). Key details:
 
-- `pointerdown` starts the drag sequence
+- `pointerdown` starts the drag
 - `pointermove` on `window` tracks position (with `preventDefault` to block scroll)
-- `pointerup` / `pointercancel` on `window` ends the drag
-- Zone hit-testing is **pure math** (3 equal columns), not DOM rect lookups — this is intentional for iOS reliability
-- A drag shorter than 15px threshold is treated as a tap → opens card popup
-- Cards placed this turn are "uncommitted" — they can be dragged back to hand or moved to another zone
+- `pointerup` / `pointercancel` ends the drag
+- Zone hit-testing is **pure math** (3 equal columns) — not DOM rect lookups. This is intentional for iOS reliability. Do not change this.
+- A drag shorter than 15px is treated as a tap → opens card popup
+- Cards placed this turn are "uncommitted" — draggable back to hand or to another zone
 
 ---
 
 ## CSS system
 
-All CSS lives in `src/styles/globalStyles.js` as a single template string exported as `GLOBAL_CSS`. It is injected into `<head>` via:
+All CSS lives in `src/styles/globalStyles.js` as a single template string. **Do not add separate `.css` files.**
 
-```js
-useEffect(() => {
-  const s = document.createElement("style");
-  s.textContent = GLOBAL_CSS;
-  document.head.appendChild(s);
-  return () => document.head.removeChild(s);
-}, []);
-```
+Key CSS classes already defined and ready to use:
+- `.destroy-flash` — red burst animation for destroyed cards
+- `.ongoing-shimmer` — animated shimmer border for Ongoing cards (apply in `CardView.jsx`)
+- `.card-land` — pop animation when card lands in a zone
+- `.card-uncommitted` — green pulse for cards played this turn
 
-**Do not add separate `.css` files.** All new styles go into `globalStyles.js`.
-
-CSS variables defined in `:root`:
+CSS variables in `:root`:
 - `--bg`, `--bg2`, `--bg3` — dark background layers
-- `--neon` — #b4ff4f (lime green accent)
+- `--neon` — #b4ff4f (lime green)
 - `--hot` — #ff5fba (pink)
 - `--ice` — #5fd4ff (cyan)
-- `--text`, `--muted` — text colors
-- `--f-display` — Bangers font (card names, titles)
-- `--f-head` — Inter font (UI text)
-- `--f-mono` — Orbitron font (numbers, badges)
-- `--ch` — per-card hue (set inline via style prop)
-
----
-
-## Card images
-
-Card images are managed in `src/game/cardImages.js`. Currently all values are `null`, which causes cards to display a colored emoji placeholder instead.
-
-To add images, update the object with URL strings:
-```js
-const CARD_IMAGES = {
-  "c001": "https://...",
-  "c002": "https://...",
-  // etc.
-};
-```
-
-Images come from Google Sheets where the original card art is stored. The 77 base cards are `c001` through `c077`.
+- `--f-display` — Bangers (card names, titles)
+- `--f-head` — Inter (UI text)
+- `--f-mono` — Orbitron (numbers, badges)
+- `--ch` — per-card hue (set inline)
 
 ---
 
@@ -231,60 +238,48 @@ Images come from Google Sheets where the original card art is stored. The 77 bas
 
 | Key | Contents |
 |-----|---------|
-| `zany_v9` | Full cards array (user's collection with any custom edits) |
-| `zany_v8` | Old format — cleared automatically on load |
-| `zany_decks_v1` | Saved deck configurations (array of 3 deck objects) |
+| `zany_v9` | Full cards array — bump to `zany_v10` before shipping if data structure changes |
+| `zany_v8` | Old format — cleared automatically |
+| `zany_decks_v1` | Saved deck configurations |
 
 ---
 
-## What NOT to touch without careful thought
+## What NOT to touch without care
 
-- **`snapHandlers.js`** — 60+ card ability implementations. Each handler is carefully balanced. Adding a new handler is fine; modifying existing ones risks breaking card interactions.
-- **`snapHelpers.js`** — `_moveCard` and `_canDestroy` have subtle immunity checks (Colossus, Armor) that must be preserved.
-- **`gameLogic.js` `zonePower()`** — Iron Man, Blue Marvel, Punisher, and Klaw all have Ongoing effects baked into this function. Order of operations matters.
-- **The drag system in `GameScreen.jsx`** — it works on iOS. Be very careful with any pointer event changes.
-- **`revealedIds` logic** — cards are face-down until explicitly added to this array. The reveal sequence in `GameScreen.jsx` controls the timing.
+- **`snapHandlers.js`** — 60+ ability implementations. Modifying existing ones risks breaking card interactions.
+- **`snapHelpers.js`** — `_moveCard` and `_canDestroy` have immunity checks (Colossus `_immune`, Armor `_armorSide`) that must be preserved.
+- **`zonePower()` in `gameLogic.js`** — Iron Man, Blue Marvel, Punisher, Klaw Ongoing effects are baked in here. Order of operations matters.
+- **The drag system in `GameScreen.jsx`** — it works on iOS. Be very careful with pointer event changes.
+- **`revealedIds` logic** — cards are face-down until explicitly added. The reveal sequencer in `GameScreen.jsx` controls timing.
 
 ---
 
 ## Common tasks
 
 **Add a new card ability:**
-1. Add the handler to `SNAP_HANDLERS` in `snapHandlers.js` using the card's `snapName` as the key
-2. Make sure the card in `cardData.js` has the matching `snapName`
-
-**Add a new zone:**
-Add an object to the `ZONES` array in `zones.js` following the existing pattern.
-
-**Change game balance (turns, hand size, max cards per zone):**
-Edit the constants in `constants.js` — `TURNS`, `HAND_SIZE`, `MAX_PER_SIDE`.
+1. Add handler to `SNAP_HANDLERS` in `snapHandlers.js` using `snapName` as key
+2. Ensure the card in `cardData.js` has the matching `snapName`
 
 **Add card images:**
-Update the URL values in `src/game/cardImages.js`.
+Update URL values in `src/game/cardImages.js`
+
+**Change game constants (turns, hand size, zone capacity):**
+Edit `constants.js` — `TURNS`, `HAND_SIZE`, `MAX_PER_SIDE`
 
 **Add a new screen:**
-1. Create the component in `src/screens/`
-2. Import it in `App.jsx`
-3. Add a `screen === "yourscreen"` branch in the `App()` return
+1. Create component in `src/screens/`
+2. Import in `App.jsx`
+3. Add `screen === "yourscreen"` branch in `App()` return
 
 **Modify global styles:**
-Edit the CSS string in `src/styles/globalStyles.js`.
+Edit the CSS string in `src/styles/globalStyles.js`
+
+**Wire a destroy hook (Deadpool, Wolverine, Apocalypse):**
+In the relevant destroy logic (Carnage, Deathlok, etc.), after splicing a card out, check for `card._deadpool`, `card._wolverine`, or if `state._apocalypseId === card.id` and handle respawn accordingly.
 
 ---
 
-## Known simplifications / approximations
-
-Some card abilities are approximated rather than fully implemented:
-
-- **Ongoing abilities** (Iron Man, Blue Marvel, Ka-Zar, etc.) are applied at reveal time rather than recalculated every render — power values on cards are the "live" values after all modifiers
-- **Iron Fist** sets a flag `_ironFistActive` but the actual move-left behavior needs to be wired into `placeCard()` in `GameScreen.jsx`
-- **Jessica Jones** sets a flag but the +5 bonus isn't applied at turn start yet
-- **Deadpool / Wolverine** set respawn flags but the destroy hook isn't fully implemented
-- **High Evolutionary** is a no-op (Game Start ability requires pre-game setup)
-
----
-
-## The 77 base cards (name → snapName mapping)
+## The 77 base cards (name → snapName)
 
 | Card name | snapName |
 |-----------|---------|
