@@ -46,7 +46,7 @@ const CARD_IMAGES = {
   "c041": { art1: "/card-art/c041 - Wakanda Ellen/art1.png", art2: null },
   "c042": { art1: "/card-art/c042 - Congressman Joe Jonas/art1.png", art2: null },
   "c043": { art1: "/card-art/c043 - Podcast Squirrel/art1.png", art2: null },
-  "c044": { art1: null, art2: null },
+  "c044": { art1: "/card-art/c044 - Goblin Addict/art1.avif", art2: null },
   "c045": { art1: "/card-art/c045 - Medevial Basketball Cat/art1.png", art2: null },
   "c046": { art1: "/card-art/c046 - Timuoxi Cha le Mei/art1.jpg", art2: "/card-art/c046 - Timuoxi Cha le Mei/art2.png" },
   "c047": { art1: "/card-art/c047 - Mr. Pants/art1.png", art2: null },

@@ -39,13 +39,14 @@ export default function App() {
       const userExtra = {};
       if (stored && stored.length > 0) {
         stored.forEach(c => {
-          if (c.imageUrl && c.imageUrl !== CARD_IMAGES[c.id]) userImgs[c.id] = c.imageUrl;
+          if (c.imageUrl && c.imageUrl !== CARD_IMAGES[c.id]?.art1) userImgs[c.id] = c.imageUrl;
           userExtra[c.id] = c;
         });
       }
       const merged = SPREADSHEET_CARDS.map(c => ({
         ...c,
-        imageUrl: userImgs[c.id] || CARD_IMAGES[c.id] || c.imageUrl || null,
+        imageUrl: userImgs[c.id] || CARD_IMAGES[c.id]?.art1 || c.imageUrl || null,
+        altImageUrl: CARD_IMAGES[c.id]?.art2 || null,
       }));
       const baseIds = new Set(SPREADSHEET_CARDS.map(c => c.id));
       Object.values(userExtra).forEach(c => { if (!baseIds.has(c.id)) merged.push(c); });
