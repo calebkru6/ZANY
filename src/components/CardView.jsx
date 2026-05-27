@@ -32,7 +32,7 @@ export function CardView({ card, mini = false, selected = false, playing = false
           <div className="card-clip">
             <div className="card-art">
               {card.imageUrl
-                ? <img src={card.imageUrl} alt={card.name} />
+                ? <img src={card.imageUrl} alt={card.name} draggable="false" />
                 : <span className="card-emoji">{emojiOf(hue)}</span>}
             </div>
             <div className="card-vignette" />
