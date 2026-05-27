@@ -24,9 +24,15 @@ export function _moveCard(state, side, cardId, fromZ, toZ) {
   // Dagger: +2 power per enemy card at the destination
   if (moved.snapName === "Dagger") {
     const oppKey = side === "player" ? "aCards" : "pCards";
-    moved.clout += toArr.length * 2; // toArr is pre-push enemy count
+    moved.clout += state.zones[toZ][oppKey].length * 2;
   }
   toArr.push(moved);
+  // Kraven: +2 when any card moves here (checks both sides of destination zone)
+  for (const sk of ["pCards", "aCards"]) {
+    for (const c of state.zones[toZ][sk]) {
+      if (c.snapName === "Kraven" && c.id !== moved.id) c.clout += 2;
+    }
+  }
   return true;
 }
 
@@ -66,6 +72,30 @@ export function _snapshotPowers(state) {
     for (const c of state.zones[z].aCards) m.set(c.id, { z, side: "ai",     clout: c.clout });
   }
   return m;
+}
+
+// Called after a card is discarded — handles Apocalypse/Wolverine respawn.
+export function _afterDiscard(state, card, isPlayer) {
+  const hand    = isPlayer ? state.playerHand    : state.aiHand;
+  const discard = isPlayer ? state.playerDiscard : state.aiDiscard;
+  if (card.snapName === "Apocalypse") {
+    discard.pop(); // undo the push that just happened
+    hand.push({ ...card, clout: card.clout + 4 });
+  }
+  if (card._wolverine) {
+    hand.push({ ...card, clout: card.clout + 2 });
+  }
+}
+
+// Called after a card is destroyed — handles Deadpool/Wolverine respawn.
+export function _afterDestroy(state, card, isPlayer) {
+  const hand = isPlayer ? state.playerHand : state.aiHand;
+  if (card._deadpool) {
+    hand.push({ ...card, clout: card.clout * 2 });
+  }
+  if (card._wolverine) {
+    hand.push({ ...card, clout: card.clout + 2 });
+  }
 }
 
 export function _diffPowers(before, after) {

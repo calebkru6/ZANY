@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "PowerShell(Rename-Item \"C:\\\\Users\\\\caleb\\\\Documents\\\\GitHub\\\\ZANY\\\\public\\\\card-art\\\\c044 - Goblin Addict\\\\art1.png.avif\" \"art1.avif\")"
+      "PowerShell(Rename-Item \"C:\\\\Users\\\\caleb\\\\Documents\\\\GitHub\\\\ZANY\\\\public\\\\card-art\\\\c044 - Goblin Addict\\\\art1.png.avif\" \"art1.avif\")",
+      "Bash(npx vite *)"
     ]
   }
 }

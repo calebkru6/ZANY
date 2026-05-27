@@ -6,7 +6,7 @@
 // ════════════════════════════════════════════════════════════════════
 
 import { MAX_PER_SIDE } from "../constants";
-import { _moveCard, _canDestroy, _pickAwayZone } from "./snapHelpers";
+import { _moveCard, _canDestroy, _pickAwayZone, _afterDiscard, _afterDestroy } from "./snapHelpers";
 
 // Inline helper — zone total power. Used by several handlers.
 const zonePower = cards => cards.reduce((sum, c) => sum + c.clout, 0);
@@ -88,16 +88,7 @@ const SNAP_HANDLERS = {
     return { state: s };
   },
 
-  "Ant Man": (s, card, zIdx, isPlayer) => {
-    // Ongoing approximated as on-reveal: +4 if your side here is full
-    const sideKey = isPlayer ? "pCards" : "aCards";
-    const here = s.zones[zIdx][sideKey];
-    if (here.length >= MAX_PER_SIDE) {
-      const c = here.find(x => x.id === card.id);
-      if (c) c.clout += 4;
-    }
-    return { state: s };
-  },
+  "Ant Man": (s) => ({ state: s }), // Ongoing: handled in zonePower (+4 when side is full)
 
   "Adam Warlock": (s, card, zIdx, isPlayer) => {
     // +1 power if not currently winning here (simplified end-of-turn check)
@@ -261,7 +252,6 @@ const SNAP_HANDLERS = {
   },
 
   "Black Bolt": (s, card, zIdx, isPlayer) => {
-    // Discard the lowest-cost card from opponent's hand
     const oppHand = isPlayer ? s.aiHand : s.playerHand;
     if (!oppHand.length) return { state: s };
     const lowest = oppHand.slice().sort((a, b) => (a.energy ?? 0) - (b.energy ?? 0))[0];
@@ -270,28 +260,22 @@ const SNAP_HANDLERS = {
       oppHand.splice(idx, 1);
       if (isPlayer) { s.aiDiscard     = s.aiDiscard     || []; s.aiDiscard.push(lowest); }
       else          { s.playerDiscard = s.playerDiscard || []; s.playerDiscard.push(lowest); }
+      _afterDiscard(s, lowest, !isPlayer);
     }
     return { state: s };
   },
 
   "Blade": (s, card, zIdx, isPlayer) => {
-    // Discard rightmost card from your hand
     const hand = isPlayer ? s.playerHand : s.aiHand;
     if (!hand.length) return { state: s };
     const discarded = hand.pop();
     if (isPlayer) { s.playerDiscard = s.playerDiscard || []; s.playerDiscard.push(discarded); }
     else          { s.aiDiscard     = s.aiDiscard     || []; s.aiDiscard.push(discarded); }
+    _afterDiscard(s, discarded, isPlayer);
     return { state: s };
   },
 
-  "Blue Marvel": (s, card, zIdx, isPlayer) => {
-    // +1 to all your other cards everywhere (Ongoing as on-reveal)
-    const sideKey = isPlayer ? "pCards" : "aCards";
-    for (const z of s.zones) {
-      for (const c of z[sideKey]) if (c.id !== card.id) c.clout += 1;
-    }
-    return { state: s };
-  },
+  "Blue Marvel": (s) => ({ state: s }), // Ongoing: handled cross-zone in zonePower
 
   "Brood": (s, card, zIdx, isPlayer) => {
     // Add 2 Broodlings here with same power
@@ -314,7 +298,6 @@ const SNAP_HANDLERS = {
   },
 
   "Carnage": (s, card, zIdx, isPlayer) => {
-    // Destroy your other cards here, +2 power per destroyed
     const side    = isPlayer ? "player" : "ai";
     const sideKey = isPlayer ? "pCards"  : "aCards";
     const here    = s.zones[zIdx][sideKey];
@@ -324,6 +307,7 @@ const SNAP_HANDLERS = {
       const i = here.indexOf(c); if (i >= 0) here.splice(i, 1);
       if (isPlayer) { s.playerDestroyed = s.playerDestroyed || []; s.playerDestroyed.push(c); }
       else          { s.aiDestroyed     = s.aiDestroyed     || []; s.aiDestroyed.push(c); }
+      _afterDestroy(s, c, isPlayer);
     });
     if (me) me.clout += others.length * 2;
     return { state: s };
@@ -366,7 +350,6 @@ const SNAP_HANDLERS = {
   },
 
   "Deathlok": (s, card, zIdx, isPlayer) => {
-    // Destroy your other cards here
     const side    = isPlayer ? "player" : "ai";
     const sideKey = isPlayer ? "pCards"  : "aCards";
     const here    = s.zones[zIdx][sideKey];
@@ -375,6 +358,7 @@ const SNAP_HANDLERS = {
       const i = here.indexOf(c); if (i >= 0) here.splice(i, 1);
       if (isPlayer) { s.playerDestroyed = s.playerDestroyed || []; s.playerDestroyed.push(c); }
       else          { s.aiDestroyed     = s.aiDestroyed     || []; s.aiDestroyed.push(c); }
+      _afterDestroy(s, c, isPlayer);
     });
     return { state: s };
   },
@@ -464,7 +448,6 @@ const SNAP_HANDLERS = {
   },
 
   "Gambit": (s, card, zIdx, isPlayer) => {
-    // Discard a card from hand, destroy random enemy card here
     const hand    = isPlayer ? s.playerHand : s.aiHand;
     const oppSide = isPlayer ? "ai"     : "player";
     const oppKey  = isPlayer ? "aCards" : "pCards";
@@ -472,6 +455,7 @@ const SNAP_HANDLERS = {
     const discarded = hand.splice(Math.floor(Math.random() * hand.length), 1)[0];
     if (isPlayer) { s.playerDiscard = s.playerDiscard || []; s.playerDiscard.push(discarded); }
     else          { s.aiDiscard     = s.aiDiscard     || []; s.aiDiscard.push(discarded); }
+    _afterDiscard(s, discarded, isPlayer);
     const destroyable = s.zones[zIdx][oppKey].filter(c => _canDestroy(s, oppSide, zIdx, c.id));
     if (destroyable.length) {
       const target = destroyable[Math.floor(Math.random() * destroyable.length)];
@@ -479,6 +463,7 @@ const SNAP_HANDLERS = {
       if (ti >= 0) s.zones[zIdx][oppKey].splice(ti, 1);
       if (!isPlayer) { s.playerDestroyed = s.playerDestroyed || []; s.playerDestroyed.push(target); }
       else           { s.aiDestroyed     = s.aiDestroyed     || []; s.aiDestroyed.push(target); }
+      _afterDestroy(s, target, !isPlayer);
     }
     return { state: s };
   },
@@ -503,15 +488,7 @@ const SNAP_HANDLERS = {
     return { state: s };
   },
 
-  "Iron Man": (s, card, zIdx, isPlayer) => {
-    // Ongoing — double zone power. Approximated as +sum-of-others on reveal.
-    const sideKey    = isPlayer ? "pCards" : "aCards";
-    const others     = s.zones[zIdx][sideKey].filter(c => c.id !== card.id);
-    const me         = s.zones[zIdx][sideKey].find(c => c.id === card.id);
-    const otherTotal = others.reduce((a, c) => a + c.clout, 0);
-    if (me) me.clout += otherTotal;
-    return { state: s };
-  },
+  "Iron Man": (s) => ({ state: s }), // Ongoing: handled in zonePower (doubles zone total)
 
   "Iron Fist": (s, card, zIdx, isPlayer) => {
     // Next card you play moves one location left (flag on state)
@@ -548,15 +525,9 @@ const SNAP_HANDLERS = {
     return { state: s, fx };
   },
 
-  "Ka-Zar": (s, card, zIdx, isPlayer) => {
-    // Ongoing — +1 to all your 1-cost cards (on-reveal approximation)
-    const sideKey = isPlayer ? "pCards" : "aCards";
-    for (const z of s.zones) for (const c of z[sideKey]) if (c.energy === 1 && c.id !== card.id) c.clout += 1;
-    return { state: s };
-  },
+  "Ka-Zar": (s) => ({ state: s }), // Ongoing: handled cross-zone in displayClout
 
   "Killmonger": (s, card, zIdx, isPlayer) => {
-    // Destroy ALL 1-cost cards in play
     for (let z = 0; z < 3; z++) {
       for (const [side, sideKey] of [["player", "pCards"], ["ai", "aCards"]]) {
         const victims = s.zones[z][sideKey].filter(c => c.energy === 1 && c.id !== card.id && _canDestroy(s, side, z, c.id));
@@ -564,21 +535,14 @@ const SNAP_HANDLERS = {
           const i = s.zones[z][sideKey].indexOf(c); if (i >= 0) s.zones[z][sideKey].splice(i, 1);
           if (sideKey === "pCards") { s.playerDestroyed = s.playerDestroyed || []; s.playerDestroyed.push(c); }
           else                     { s.aiDestroyed     = s.aiDestroyed     || []; s.aiDestroyed.push(c); }
+          _afterDestroy(s, c, side === "player");
         });
       }
     }
     return { state: s };
   },
 
-  "Klaw": (s, card, zIdx, isPlayer) => {
-    // Ongoing — right location gets +7. Approximated as on-reveal buff.
-    const rightZ = zIdx + 1;
-    if (rightZ < 3) {
-      const sideKey = isPlayer ? "pCards" : "aCards";
-      for (const c of s.zones[rightZ][sideKey]) c.clout += 7;
-    }
-    return { state: s };
-  },
+  "Klaw": (s) => ({ state: s }), // Ongoing: handled in klawBonusForZone (+7 to right zone)
 
   "Kraven": (s, card, zIdx, isPlayer) => {
     // +2 per card that moves here — flagged; tracked by move handler
@@ -589,7 +553,6 @@ const SNAP_HANDLERS = {
   },
 
   "Lady Sif": (s, card, zIdx, isPlayer) => {
-    // Discard highest-cost card from hand
     const hand = isPlayer ? s.playerHand : s.aiHand;
     if (!hand.length) return { state: s };
     const highest = hand.slice().sort((a, b) => (b.energy ?? 0) - (a.energy ?? 0))[0];
@@ -598,6 +561,7 @@ const SNAP_HANDLERS = {
       hand.splice(idx, 1);
       if (isPlayer) { s.playerDiscard = s.playerDiscard || []; s.playerDiscard.push(highest); }
       else          { s.aiDiscard     = s.aiDiscard     || []; s.aiDiscard.push(highest); }
+      _afterDiscard(s, highest, isPlayer);
     }
     return { state: s };
   },
@@ -629,14 +593,7 @@ const SNAP_HANDLERS = {
     return { state: s };
   },
 
-  "Punisher": (s, card, zIdx, isPlayer) => {
-    // Ongoing — +1 per enemy card here (on-reveal approximation)
-    const oppKey  = isPlayer ? "aCards" : "pCards";
-    const sideKey = isPlayer ? "pCards" : "aCards";
-    const me = s.zones[zIdx][sideKey].find(c => c.id === card.id);
-    if (me) me.clout += s.zones[zIdx][oppKey].length;
-    return { state: s };
-  },
+  "Punisher": (s) => ({ state: s }), // Ongoing: handled in zonePower (+1 per enemy here)
 
   "Wolverine": (s, card, zIdx, isPlayer) => {
     // When destroyed, respawn with +2 power — flag for destroy hook
@@ -672,14 +629,9 @@ const SNAP_HANDLERS = {
     return { state: s };
   },
 
-  "Apocalypse": (s, card, zIdx, isPlayer) => {
-    // When discarded, return with +4 power — flag for discard handling
-    s._apocalypseId = card.id;
-    return { state: s };
-  },
+  "Apocalypse": (s) => ({ state: s }), // respawn handled by _afterDiscard in discard sources
 
   "Arnim Zola": (s, card, zIdx, isPlayer) => {
-    // Destroy a random other card here, copy it to other locations
     const side    = isPlayer ? "player" : "ai";
     const sideKey = isPlayer ? "pCards"  : "aCards";
     const here    = s.zones[zIdx][sideKey].filter(c => c.id !== card.id && _canDestroy(s, side, zIdx, c.id));
@@ -689,6 +641,7 @@ const SNAP_HANDLERS = {
     if (ti >= 0) s.zones[zIdx][sideKey].splice(ti, 1);
     if (isPlayer) { s.playerDestroyed = s.playerDestroyed || []; s.playerDestroyed.push(target); }
     else          { s.aiDestroyed     = s.aiDestroyed     || []; s.aiDestroyed.push(target); }
+    _afterDestroy(s, target, isPlayer);
     for (let z = 0; z < 3; z++) {
       if (z === zIdx) continue;
       if (s.zones[z][sideKey].length < MAX_PER_SIDE)
@@ -717,11 +670,28 @@ const SNAP_HANDLERS = {
     return { state: s };
   },
 
-  // Minor state effects — no-ops at reveal
-  "Black Widow": (s) => ({ state: s }),
-  "Cloak":       (s) => ({ state: s }),
-  "Death":       (s) => ({ state: s }),
-  "High Evolutionary": (s) => ({ state: s }),
+  // Minor state effects
+  "Black Widow": (s, card, zIdx, isPlayer) => {
+    // Opponent skips their draw next turn
+    if (isPlayer) s._widowBiteAi = true;
+    else s._widowBitePlayer = true;
+    return { state: s };
+  },
+  "Cloak": (s, card, zIdx) => {
+    s.zones[zIdx]._cloakTurn = s.turn; // next turn both players may move cards here
+    return { state: s };
+  },
+  "Death": (s) => ({ state: s }),
+  "High Evolutionary": (s, card, zIdx, isPlayer) => {
+    // +2 to all your cards in play that have no ability (no snapName)
+    const sideKey = isPlayer ? "pCards" : "aCards";
+    for (const z of s.zones) {
+      for (const c of z[sideKey]) {
+        if (c.id !== card.id && !c.snapName) c.clout += 2;
+      }
+    }
+    return { state: s };
+  },
 
   "Captain Marvel": (s, card, zIdx, isPlayer) => {
     // At game end move to winning location — flag
@@ -783,16 +753,19 @@ const SNAP_HANDLERS = {
   },
 
   "Gladiator": (s, card, zIdx, isPlayer) => {
-    // Add card from opponent's deck to their side; destroy if lower power
+    // Add card from opponent's deck to their side; destroy if lower power (unless Armor protects)
     const oppDeck = isPlayer ? s.aiDeck     : s.playerDeck;
     const oppKey  = isPlayer ? "aCards"     : "pCards";
     const sideKey = isPlayer ? "pCards"     : "aCards";
+    const oppSide = isPlayer ? "ai"         : "player";
     if (!oppDeck.length || s.zones[zIdx][oppKey].length >= MAX_PER_SIDE) return { state: s };
     const pulled = { ...oppDeck.shift(), id: `glad-${Date.now()}` };
-    const me     = s.zones[zIdx][sideKey].find(c => c.id === card.id);
-    if (pulled.clout < (me?.clout || 0)) {
+    const me = s.zones[zIdx][sideKey].find(c => c.id === card.id);
+    const armorProtects = s.zones[zIdx]._armorSide === oppSide;
+    if (pulled.clout < (me?.clout || 0) && !armorProtects) {
       if (!isPlayer) { s.playerDestroyed = s.playerDestroyed || []; s.playerDestroyed.push(pulled); }
       else           { s.aiDestroyed     = s.aiDestroyed     || []; s.aiDestroyed.push(pulled); }
+      _afterDestroy(s, pulled, !isPlayer);
     } else {
       s.zones[zIdx][oppKey].push(pulled);
     }

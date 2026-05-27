@@ -7,7 +7,7 @@ import { CardView } from "./CardView";
 import { RevealEffect } from "./effects/RevealEffect";
 import { PowerDeltaLabel } from "./effects/PowerDeltaLabel";
 
-export function Zone({ zone, zoneRef, zoneIdx, state, dragOver, dragBlocked, scoreChanged, revealedIds, revealFx, powerFx, onSelectCard, playedThisTurnIds, onDragPlayerCard, onUnplayCard, draggingCardId, winnerGlow }) {
+export function Zone({ zone, zoneRef, zoneIdx, state, dragOver, dragBlocked, scoreChanged, revealedIds, revealFx, powerFx, onSelectCard, playedThisTurnIds, onDragPlayerCard, onUnplayCard, draggingCardId, winnerGlow, currentTurn, destroyFlash }) {
   const pp = zonePower(zone.pCards, state, true,  zoneIdx) + klawBonusForZone(state || { zones: [] }, true,  zoneIdx);
   const ap = zonePower(zone.aCards, state, false, zoneIdx) + klawBonusForZone(state || { zones: [] }, false, zoneIdx);
   const winning = pp > ap ? "player" : ap > pp ? "ai" : "tied";
@@ -24,7 +24,7 @@ export function Zone({ zone, zoneRef, zoneIdx, state, dragOver, dragBlocked, sco
   return (
     <div
       ref={zoneRef}
-      className={`zone${zone.bgImage ? " has-bg-image" : ""}${dragOver ? " drag-over" : ""}${dragBlocked ? " drag-blocked" : ""}${winnerGlow ? " zone-winner-glow" : ""}`}
+      className={`zone${zone.bgImage ? " has-bg-image" : ""}${dragOver ? " drag-over" : ""}${dragBlocked ? " drag-blocked" : ""}${winnerGlow ? " zone-winner-glow" : ""}${destroyFlash ? " destroy-flash-zone" : ""}`}
       style={zoneStyle}
     >
       {/* AI cards */}
@@ -50,8 +50,13 @@ export function Zone({ zone, zoneRef, zoneIdx, state, dragOver, dragBlocked, sco
       {/* Score bar */}
       <div className={`zone-bar${winning === "player" ? " winning-player" : winning === "ai" ? " winning-ai" : ""}`}>
         <span className={`zone-score-hex${winning === "ai" ? " leading-ai" : ""}${scoreChanged ? " score-changed" : ""}`}>{ap}</span>
-        <span className="zone-name">{zone.name}</span>
-        <div className="zone-ability">{zone.ability}</div>
+        <div className="zone-center-info">
+          <span className="zone-name">{zone.name}</span>
+          <div className="zone-ability">{zone.ability}</div>
+          {zone._cloakTurn === currentTurn - 1 && (
+            <div className="zone-cloak-badge">PORTAL OPEN</div>
+          )}
+        </div>
         <span className={`zone-score-hex${winning === "player" ? " leading-player" : ""}${scoreChanged ? " score-changed" : ""}`}>{pp}</span>
       </div>
 

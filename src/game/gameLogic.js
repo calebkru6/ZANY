@@ -54,16 +54,42 @@ export function initGame(playerCards) {
 
 // ─── Reveal ───────────────────────────────────────────────────────────────────
 export function applyReveal(card, zoneIdx, state, isPlayer) {
-  // Cosmo blocks On Reveal abilities — opponent's cards only
-  if (state.zones[zoneIdx]._cosmoActive) {
-    const cosmoOwner = state.zones[zoneIdx]._cosmoSide;
-    const cardSide   = isPlayer ? "player" : "ai";
-    if (cosmoOwner && cardSide !== cosmoOwner) return { state, fx: [] };
+  let fx = [];
+
+  // Cosmo blocks the card's On Reveal ability (not zone abilities)
+  const cosmoBlocked = state.zones[zoneIdx]._cosmoActive &&
+    state.zones[zoneIdx]._cosmoSide &&
+    state.zones[zoneIdx]._cosmoSide !== (isPlayer ? "player" : "ai");
+
+  if (!cosmoBlocked) {
+    const handler = card.snapName && SNAP_HANDLERS[card.snapName];
+    if (handler) {
+      const result = handler(state, card, zoneIdx, isPlayer) || {};
+      state = result.state || state;
+      fx    = result.fx    || [];
+    }
   }
-  const handler = card.snapName && SNAP_HANDLERS[card.snapName];
-  if (!handler) return { state, fx: [] };
-  const result = handler(state, card, zoneIdx, isPlayer) || {};
-  return { state: result.state || state, fx: result.fx || [] };
+
+  // ── Zone abilities (always fire, Cosmo does not block these) ──────────
+  const sideKey = isPlayer ? "pCards" : "aCards";
+
+  // The Vortex (z0): every card revealed here gains +1 Power
+  if (zoneIdx === 0) {
+    const c = state.zones[0][sideKey].find(x => x.id === card.id);
+    if (c) c.clout += 1;
+  }
+
+  // The Fringe (z2): the first card revealed here gives its owner +1 draw
+  if (zoneIdx === 2 && !state.zones[2]._fringeUsed) {
+    state.zones[2]._fringeUsed = true;
+    if (isPlayer) {
+      state.bonusDraw = (state.bonusDraw || 0) + 1;
+    } else {
+      state._fringeAiDraw = true;
+    }
+  }
+
+  return { state, fx };
 }
 
 // ─── Power calculation ────────────────────────────────────────────────────────
@@ -71,9 +97,16 @@ export function applyReveal(card, zoneIdx, state, isPlayer) {
 // displayClout: base power + Ongoing modifiers baked in at render time.
 export function displayClout(card, myCards, state, isPlayer) {
   let c = card.clout;
-  if (myCards) {
-    const hasKazar = myCards.some(x => x.snapName === "Ka-Zar");
-    if (hasKazar && card.energy === 1 && card.snapName !== "Ka-Zar") c += 1;
+  // Ka-Zar Ongoing: +1 to all 1-cost cards on your side (checks all zones cross-zone)
+  if (card.energy === 1 && card.snapName !== "Ka-Zar") {
+    let hasKazar = false;
+    if (state && isPlayer !== undefined) {
+      const sk = isPlayer ? "pCards" : "aCards";
+      hasKazar = state.zones.some(z => z[sk].some(x => x.snapName === "Ka-Zar"));
+    } else if (myCards) {
+      hasKazar = myCards.some(x => x.snapName === "Ka-Zar");
+    }
+    if (hasKazar) c += 1;
   }
   return Math.max(0, c);
 }
@@ -83,18 +116,31 @@ export function zonePower(cards, state, isPlayer, zIdx) {
   let base = cards.reduce((s, c) => s + displayClout(c, cards, state, isPlayer), 0);
   if (!state) return base;
 
-  const oppKey = isPlayer ? "aCards" : "pCards";
+  const sideKey = isPlayer ? "pCards" : "aCards";
+  const oppKey  = isPlayer ? "aCards" : "pCards";
 
-  // Iron Man: double total power at this location
+  // Glitch Alley (z1): lowest-power card(s) on each side get +2
+  if (zIdx === 1 && cards.length) {
+    const powers = cards.map(c => displayClout(c, cards, state, isPlayer));
+    const minPow = Math.min(...powers);
+    base += 2 * powers.filter(p => p === minPow).length;
+  }
+
+  // Iron Man Ongoing: double total power at this location
   if (cards.some(c => c.snapName === "Iron Man")) base = base * 2;
 
-  // Blue Marvel: +1 to every other card
-  const blueMarvels = cards.filter(c => c.snapName === "Blue Marvel").length;
-  if (blueMarvels) base += blueMarvels * (cards.length - blueMarvels);
+  // Blue Marvel Ongoing: +1 to all other cards everywhere (cross-zone)
+  const totalBlueMarvels = state.zones.reduce((n, z) => n + z[sideKey].filter(c => c.snapName === "Blue Marvel").length, 0);
+  if (totalBlueMarvels) base += totalBlueMarvels * cards.filter(c => c.snapName !== "Blue Marvel").length;
 
-  // Punisher: +1 per enemy card at this location
+  // Punisher Ongoing: +1 per enemy card at this location
   if (cards.some(c => c.snapName === "Punisher") && zIdx !== undefined) {
     base += state.zones[zIdx][oppKey].length;
+  }
+
+  // Ant Man Ongoing: +4 when your side of this location is full
+  if (cards.some(c => c.snapName === "Ant Man") && cards.length >= MAX_PER_SIDE) {
+    base += 4;
   }
 
   return base;

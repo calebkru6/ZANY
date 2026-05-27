@@ -31,8 +31,10 @@ export function GameScreen({ cards, deckCards, onBack }) {
   const [revealFx, setRevealFx]   = useState(null);
   const [moveFx,   setMoveFx]     = useState([]);
   const [powerFx,  setPowerFx]    = useState([]);
-  const zoneRefs = [useRef(), useRef(), useRef()];
-  const dragRef  = useRef(null);
+  const zoneRefs  = [useRef(), useRef(), useRef()];
+  const dragRef   = useRef(null);
+  const gameRef   = useRef(null);
+  const [destroyFx, setDestroyFx] = useState(new Set());
 
   const inPlay    = game.phase === "play";
   const inEnd     = game.phase === "end";
@@ -71,8 +73,14 @@ export function GameScreen({ cards, deckCards, onBack }) {
           if (!card) return prev;
           if (!s.revealedIds.includes(card.id)) s.revealedIds.push(card.id);
           const before = _snapshotPowers(s);
+          const prevPD = (s.playerDestroyed || []).length;
+          const prevAD = (s.aiDestroyed || []).length;
           const result = applyReveal(card, play.zoneIdx, s, play.isPlayer);
           const after  = _snapshotPowers(result.state);
+          if ((result.state.playerDestroyed || []).length > prevPD || (result.state.aiDestroyed || []).length > prevAD) {
+            setTimeout(() => setDestroyFx(p => new Set([...p, play.zoneIdx])), 150);
+            setTimeout(() => setDestroyFx(p => { const n = new Set(p); n.delete(play.zoneIdx); return n; }), 800);
+          }
           const powerDeltas = _diffPowers(before, after);
           setTimeout(() => {
             setRevealFx({ cardId: play.cardId, snapName: card.snapName || "", zoneIdx: play.zoneIdx, isPlayer: play.isPlayer });
@@ -102,6 +110,18 @@ export function GameScreen({ cards, deckCards, onBack }) {
       if (cancelled) return;
       setGame(prev => {
         let s = JSON.parse(JSON.stringify(prev));
+        // Jessica Jones: +5 if player didn't play at her zone this turn
+        if (s._jessicaJones) {
+          const { cardId: jjId, zoneIdx: jjZone } = s._jessicaJones;
+          const playedThere = (s.playerPlaysThisTurn || []).some(p => p.zoneIdx === jjZone);
+          if (!playedThere) {
+            for (const z of s.zones) {
+              const jj = z.pCards.find(c => c.id === jjId);
+              if (jj) { jj.clout += 5; break; }
+            }
+          }
+          s._jessicaJones = null;
+        }
         s.playerPlaysThisTurn = [];
         s.aiPlaysThisTurn = [];
         s.priority = computePriority(s, s.priority);
@@ -141,10 +161,15 @@ export function GameScreen({ cards, deckCards, onBack }) {
           s.phase = "end";
         } else {
           s.turn += 1; s.phase = "play";
-          const draws = 1 + (s.bonusDraw || 0); s.bonusDraw = 0;
+          const draws   = 1 + (s.bonusDraw || 0); s.bonusDraw = 0;
+          const aiDraws = draws + (s._fringeAiDraw ? 1 : 0); s._fringeAiDraw = false;
+          const skipP   = !!s._widowBitePlayer; s._widowBitePlayer = false;
+          const skipA   = !!s._widowBiteAi;     s._widowBiteAi     = false;
           for (let i = 0; i < draws; i++) {
-            if (s.playerDeck.length) s.playerHand.push(s.playerDeck.shift());
-            if (s.aiDeck.length)     s.aiHand.push(s.aiDeck.shift());
+            if (!skipP && s.playerDeck.length) s.playerHand.push(s.playerDeck.shift());
+          }
+          for (let i = 0; i < aiDraws; i++) {
+            if (!skipA && s.aiDeck.length) s.aiHand.push(s.aiDeck.shift());
           }
         }
         return s;
@@ -175,10 +200,13 @@ export function GameScreen({ cards, deckCards, onBack }) {
   // ── Hit-test ───────────────────────────────────────────────────────
   const hitZone = (x, y) => {
     if (typeof window === "undefined") return null;
-    const w = window.innerWidth, h = window.innerHeight;
+    const rect = gameRef.current?.getBoundingClientRect() || { left: 0, width: window.innerWidth };
+    const relX = x - rect.left;
+    const w    = rect.width;
+    const h    = window.innerHeight;
     if (y < 40 || y > h - 120) return null;
-    if (x < w / 3)     return 0;
-    if (x < w * 2 / 3) return 1;
+    if (relX < w / 3)     return 0;
+    if (relX < w * 2 / 3) return 1;
     return 2;
   };
 
@@ -237,6 +265,36 @@ export function GameScreen({ cards, deckCards, onBack }) {
       const placed = s.playerHand.splice(ci, 1)[0];
       s.zones[zoneIdx].pCards.push(placed);
       s.playerPlaysThisTurn = [...(s.playerPlaysThisTurn || []), { cardId, zoneIdx, energy: cost }];
+
+      // Iron Fist: move just-placed card one zone to the left
+      let finalZone = zoneIdx;
+      if (s._ironFistActive) {
+        s._ironFistActive = false;
+        const leftZone = zoneIdx - 1;
+        if (leftZone >= 0 && _moveCard(s, "player", cardId, zoneIdx, leftZone)) {
+          s.playerPlaysThisTurn = s.playerPlaysThisTurn.map(p =>
+            p.cardId === cardId ? { ...p, zoneIdx: leftZone } : p
+          );
+          finalZone = leftZone;
+        }
+      }
+      // Angela: +1 for each card already here (real-time accumulation)
+      for (const c of s.zones[finalZone].pCards) {
+        if (c.snapName === "Angela" && c.id !== cardId) c.clout += 1;
+      }
+      // Bishop: +1 whenever any player card is played
+      for (const z of s.zones) {
+        for (const c of z.pCards) {
+          if (c.snapName === "Bishop" && c.id !== cardId) c.clout += 1;
+        }
+      }
+      // Echo: strip Ongoing ability if AI's Echo is protecting this zone
+      if (s.zones[finalZone]._echoSide === "ai") {
+        const p2 = s.zones[finalZone].pCards.find(c => c.id === cardId);
+        if (p2 && p2.abilityText && p2.abilityText.startsWith("Ongoing:")) {
+          p2.abilityText = ""; p2.snapName = "";
+        }
+      }
       return s;
     });
     setTimeout(() => setPlayingId(null), 400);
@@ -282,7 +340,9 @@ export function GameScreen({ cards, deckCards, onBack }) {
           const card = game.playerHand.find(c => c.id === cardId);
           if (!card) { setDebugLog(`Not in hand`); return; }
           if (game.zones[zi].pCards.length >= MAX_PER_SIDE) { setDebugLog(`Location full (${MAX_PER_SIDE} max)`); return; }
-          const cost  = card.energy ?? card.clout;
+          const destroyedCt2  = (game.playerDestroyed || []).length;
+          const hasDeathCard2 = game.zones.some(z=>z.pCards.some(c=>c.snapName==="Death")) || game.playerHand.some(c=>c.snapName==="Death");
+          const cost  = hasDeathCard2 ? deathReducedCost(card, destroyedCt2) : (card.energy ?? card.clout);
           const spent = (game.playerPlaysThisTurn || []).reduce((s, p) => s + p.energy, 0);
           if (cost > game.turn - spent) { setDebugLog(`Need ${cost} Flux — only ${game.turn - spent} left`); return; }
           if (!inPlay) { setDebugLog(`Wait for next turn`); return; }
@@ -307,18 +367,50 @@ export function GameScreen({ cards, deckCards, onBack }) {
     setGame(prev => {
       let s = JSON.parse(JSON.stringify(prev));
       const aiBudget = s.turn; let aiSpent = 0; const aiPlays = [];
+      // Death: AI cost reduction
+      const aiDestroyedCount = (s.aiDestroyed || []).length;
+      const aiHasDeath = s.aiHand.some(c => c.snapName === "Death") || s.zones.some(z => z.aCards.some(c => c.snapName === "Death"));
+      const aiCost = c => aiHasDeath ? Math.max(0, (c.energy ?? c.clout) - aiDestroyedCount) : (c.energy ?? c.clout);
       for (let attempt = 0; attempt < 3 && s.aiHand.length; attempt++) {
-        const affordable = s.aiHand.filter(c => (c.energy ?? c.clout) <= aiBudget - aiSpent);
+        const affordable = s.aiHand.filter(c => aiCost(c) <= aiBudget - aiSpent);
         if (!affordable.length) break;
         const openZones = [0, 1, 2].filter(zi => s.zones[zi].aCards.length < MAX_PER_SIDE);
         if (!openZones.length) break;
-        const pick = affordable[Math.floor(Math.random() * affordable.length)];
-        const zoneIdx = openZones[Math.floor(Math.random() * openZones.length)];
+        // Prefer highest-clout card (70% chance), else random
+        affordable.sort((a, b) => b.clout - a.clout);
+        const pick = Math.random() < 0.7 ? affordable[0] : affordable[Math.floor(Math.random() * affordable.length)];
+        // Prefer zone where AI margin is lowest (losing or tied) — 65% chance
+        const aiMargin = zi => s.zones[zi].aCards.reduce((s,c)=>s+c.clout,0) - s.zones[zi].pCards.reduce((s,c)=>s+c.clout,0);
+        openZones.sort((a, b) => aiMargin(a) - aiMargin(b));
+        const zoneIdx = Math.random() < 0.65 ? openZones[0] : openZones[Math.floor(Math.random() * openZones.length)];
         const ci = s.aiHand.findIndex(c => c.id === pick.id); if (ci === -1) break;
         const card = s.aiHand.splice(ci, 1)[0];
         s.zones[zoneIdx].aCards.push(card);
-        aiSpent += card.energy ?? card.clout;
+        aiSpent += aiCost(card);
         aiPlays.push({ cardId: card.id, zoneIdx });
+      }
+      // Echo / Angela / Bishop — fire for each AI card just played
+      for (const play of aiPlays) {
+        const zone = s.zones[play.zoneIdx];
+        // Echo: strip Ongoing if player's Echo guards this zone
+        if (zone._echoSide === "player") {
+          const c = zone.aCards.find(x => x.id === play.cardId);
+          if (c && c.abilityText && c.abilityText.startsWith("Ongoing:")) {
+            c.abilityText = ""; c.snapName = "";
+          }
+        }
+        // Angela AI: +1 per card played at her zone
+        for (const c of zone.aCards) {
+          if (c.snapName === "Angela" && c.id !== play.cardId) c.clout += 1;
+        }
+      }
+      // Bishop AI: +1 per AI card played this turn
+      for (const play of aiPlays) {
+        for (const z of s.zones) {
+          for (const c of z.aCards) {
+            if (c.snapName === "Bishop" && c.id !== play.cardId) c.clout += 1;
+          }
+        }
       }
       s.aiPlaysThisTurn = aiPlays; s.phase = "reveal";
       return s;
@@ -341,7 +433,7 @@ export function GameScreen({ cards, deckCards, onBack }) {
   const isDragging     = !!drag;
 
   return (
-    <div className="screen game-screen">
+    <div ref={gameRef} className="screen game-screen">
       {DEBUG_DRAG && <div className={`debug-status${dragOver !== null ? " debug-hit" : ""}`}>{debugLog}</div>}
 
       {/* Top bar */}
@@ -374,6 +466,11 @@ export function GameScreen({ cards, deckCards, onBack }) {
           👁 DAREDEVIL — CPU has {game.aiHand?.length ?? 0} cards · {game.aiHand?.reduce((s,c)=>s+(c.energy??c.clout),0) ?? 0} total energy
         </div>
       )}
+      {game._widowBitePlayer && inPlay && (
+        <div style={{background:"rgba(95,212,255,0.12)",borderBottom:"1px solid rgba(95,212,255,0.3)",padding:"4px 12px",display:"flex",alignItems:"center",gap:8,fontFamily:"var(--f-display)",fontSize:"0.72rem",color:"#5fd4ff",letterSpacing:"0.07em",flexShrink:0}}>
+          🕷 WIDOW'S BITE — You skip your next draw
+        </div>
+      )}
 
       {/* Zones */}
       <div className="zones-row">
@@ -395,6 +492,8 @@ export function GameScreen({ cards, deckCards, onBack }) {
               onUnplayCard={cid => unplayCard(cid)}
               draggingCardId={drag?.cardId}
               winnerGlow={inEnd && zoneResult?.winner === "player"}
+              currentTurn={game.turn}
+              destroyFlash={destroyFx.has(i)}
             />
           );
         })}
@@ -427,7 +526,7 @@ export function GameScreen({ cards, deckCards, onBack }) {
             const spent     = (game.playerPlaysThisTurn || []).reduce((s, p) => s + p.energy, 0);
             const remaining = game.turn - spent;
             const total     = game.playerHand.length;
-            const vw        = typeof window !== "undefined" ? window.innerWidth : 380;
+            const vw        = typeof window !== "undefined" ? Math.min(window.innerWidth, gameRef.current?.offsetWidth || 430) : 380;
             const slotW     = Math.max(52, Math.min(88, Math.floor((vw - 24 - (Math.max(total,1)-1)*4) / Math.max(total,1))));
             return game.playerHand.map((card, i) => {
               const isSelected   = selected === card.id;
