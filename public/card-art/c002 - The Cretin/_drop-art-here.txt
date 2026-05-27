@@ -1,0 +1,5 @@
+﻿Card: The Cretin (c002)
+Drop art files into this folder:
+  art1.png  (primary art)
+  art2.png  (alternate art)
+Supported formats: .png  .jpg  .webp
